@@ -36,7 +36,8 @@ class KeyMetadata implements EncryptionKeyMetadata, IndexedRecord {
   private static final Schema SCHEMA_V1 =
       new Schema(
           required(0, "encryption_key", Types.BinaryType.get()),
-          optional(1, "aad_prefix", Types.BinaryType.get()));
+          optional(1, "wrapping_key_id", Types.StringType.get()),
+          optional(2, "aad_prefix", Types.BinaryType.get()));
   private static final org.apache.avro.Schema AVRO_SCHEMA_V1 =
       AvroSchemaUtil.convert(SCHEMA_V1, KeyMetadata.class.getCanonicalName());
 
@@ -48,14 +49,16 @@ class KeyMetadata implements EncryptionKeyMetadata, IndexedRecord {
   private static final KeyMetadataDecoder KEY_METADATA_DECODER = new KeyMetadataDecoder(V1);
 
   private ByteBuffer encryptionKey;
+  private String wrappingKeyId;
   private ByteBuffer aadPrefix;
   private org.apache.avro.Schema avroSchema;
 
   /** Used by Avro reflection to instantiate this class * */
   KeyMetadata() {}
 
-  KeyMetadata(ByteBuffer encryptionKey, ByteBuffer aadPrefix) {
+  KeyMetadata(ByteBuffer encryptionKey, String wrappingKeyId, ByteBuffer aadPrefix) {
     this.encryptionKey = encryptionKey;
+    this.wrappingKeyId = wrappingKeyId;
     this.aadPrefix = aadPrefix;
     this.avroSchema = AVRO_SCHEMA_V1;
   }
@@ -68,12 +71,18 @@ class KeyMetadata implements EncryptionKeyMetadata, IndexedRecord {
     return avroSchemaVersions;
   }
 
-  ByteBuffer encryptionKey() {
+  @Override
+  public ByteBuffer encryptionKey() {
     return encryptionKey;
   }
 
-  ByteBuffer aadPrefix() {
+  @Override
+  public ByteBuffer aadPrefix() {
     return aadPrefix;
+  }
+
+  String wrappingKeyId() {
+    return wrappingKeyId;
   }
 
   static KeyMetadata parse(ByteBuffer buffer) {
@@ -95,7 +104,7 @@ class KeyMetadata implements EncryptionKeyMetadata, IndexedRecord {
 
   @Override
   public EncryptionKeyMetadata copy() {
-    KeyMetadata metadata = new KeyMetadata(encryptionKey(), aadPrefix());
+    KeyMetadata metadata = new KeyMetadata(encryptionKey(), wrappingKeyId(), aadPrefix());
     return metadata;
   }
 
@@ -106,6 +115,9 @@ class KeyMetadata implements EncryptionKeyMetadata, IndexedRecord {
         this.encryptionKey = (ByteBuffer) v;
         return;
       case 1:
+        this.wrappingKeyId = (v == null) ? null : v.toString();
+        return;
+      case 2:
         this.aadPrefix = (ByteBuffer) v;
         return;
       default:
@@ -119,6 +131,8 @@ class KeyMetadata implements EncryptionKeyMetadata, IndexedRecord {
       case 0:
         return encryptionKey;
       case 1:
+        return wrappingKeyId;
+      case 2:
         return aadPrefix;
       default:
         throw new UnsupportedOperationException("Unknown field ordinal: " + i);
