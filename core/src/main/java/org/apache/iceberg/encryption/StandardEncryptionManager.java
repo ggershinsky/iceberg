@@ -65,7 +65,7 @@ public class StandardEncryptionManager implements EncryptionManager {
     ByteBuffer aadPrefix = ByteBuffer.allocate(EncryptionProperties.ENCRYPTION_AAD_LENGTH_DEFAULT);
     workerRNG.nextBytes(aadPrefix.array());
 
-    KeyMetadata encryptionMetadata = new KeyMetadata(fileDek, aadPrefix);
+    KeyMetadata encryptionMetadata = new KeyMetadata(fileDek, null, aadPrefix);
 
     // return new BaseEncryptedOutputFile(rawOutput, encryptionMetadata, rawOutput);
 
@@ -85,6 +85,11 @@ public class StandardEncryptionManager implements EncryptionManager {
     KeyMetadata keyMetadata = KeyMetadata.parse(encrypted.keyMetadata().buffer());
 
     byte[] fileDek = keyMetadata.encryptionKey().array();
+    String wrappingKeyId = keyMetadata.wrappingKeyId();
+    if (wrappingKeyId != null) {
+      fileDek = kmsClient.unwrapKey(keyMetadata.encryptionKey(), wrappingKeyId).array();
+    }
+
     byte[] aadPrefix = keyMetadata.aadPrefix().array();
 
     // return null;
@@ -104,5 +109,9 @@ public class StandardEncryptionManager implements EncryptionManager {
 
   public ByteBuffer unwrapKey(ByteBuffer wrappedSecretKey) {
     return kmsClient.unwrapKey(wrappedSecretKey, tableKeyId);
+  }
+
+  public String tableKeyId() {
+    return tableKeyId;
   }
 }
