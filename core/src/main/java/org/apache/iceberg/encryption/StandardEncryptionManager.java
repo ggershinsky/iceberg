@@ -107,10 +107,6 @@ public class StandardEncryptionManager implements EncryptionManager {
     return kmsClient.wrapKey(secretKey, tableKeyId);
   }
 
-  public ByteBuffer unwrapKey(ByteBuffer wrappedSecretKey) {
-    return kmsClient.unwrapKey(wrappedSecretKey, tableKeyId);
-  }
-
   public String tableKeyId() {
     return tableKeyId;
   }
