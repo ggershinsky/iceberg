@@ -41,8 +41,8 @@ class KeyMetadata implements EncryptionKeyMetadata, IndexedRecord {
   private static final org.apache.avro.Schema AVRO_SCHEMA_V1 =
       AvroSchemaUtil.convert(SCHEMA_V1, KeyMetadata.class.getCanonicalName());
 
-  private static final Map<Byte, Schema> SCHEMA_VERSIONS = ImmutableMap.of(V1, SCHEMA_V1);
-  private static final Map<Byte, org.apache.avro.Schema> AVRO_SCHEMA_VERSIONS =
+  private static final Map<Byte, Schema> schemaVersions = ImmutableMap.of(V1, SCHEMA_V1);
+  private static final Map<Byte, org.apache.avro.Schema> avroSchemaVersions =
       ImmutableMap.of(V1, AVRO_SCHEMA_V1);
 
   private static final KeyMetadataEncoder KEY_METADATA_ENCODER = new KeyMetadataEncoder(V1);
@@ -64,11 +64,11 @@ class KeyMetadata implements EncryptionKeyMetadata, IndexedRecord {
   }
 
   static Map<Byte, Schema> supportedSchemaVersions() {
-    return SCHEMA_VERSIONS;
+    return schemaVersions;
   }
 
   static Map<Byte, org.apache.avro.Schema> supportedAvroSchemaVersions() {
-    return AVRO_SCHEMA_VERSIONS;
+    return avroSchemaVersions;
   }
 
   @Override
