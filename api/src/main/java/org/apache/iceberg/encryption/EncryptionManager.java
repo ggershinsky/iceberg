@@ -70,4 +70,8 @@ public interface EncryptionManager extends Serializable {
   default Iterable<EncryptedOutputFile> encrypt(Iterable<OutputFile> rawOutput) {
     return Iterables.transform(rawOutput, this::encrypt);
   }
+
+  default EncryptedOutputFile encrypt(OutputFile rawOutput, boolean wrapEncryptionKey) {
+    return encrypt(rawOutput);
+  }
 }
