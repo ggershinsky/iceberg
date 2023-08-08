@@ -23,10 +23,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.apache.iceberg.events.CreateSnapshotEvent;
+import org.apache.iceberg.encryption.EncryptedFiles;
+import org.apache.iceberg.encryption.EncryptedInputFile;
+import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.InputFile;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -121,14 +123,18 @@ class FastAppend extends SnapshotProducer<AppendFiles> implements AppendFiles {
 
   private ManifestFile copyManifest(ManifestFile manifest) {
     TableMetadata current = ops.current();
-    InputFile toCopy = ops.io().newInputFile(manifest.path());
-    OutputFile newManifestPath = newManifestOutput();
+    EncryptedInputFile encryptedFile =
+        EncryptedFiles.encryptedInput(
+            ops.io().newInputFile(manifest.path()), manifest.keyMetadata());
+    InputFile toCopy = ops.encryption().decrypt(encryptedFile);
+    EncryptedOutputFile newManifestPath = newEncryptedManifest();
     return ManifestFiles.copyAppendManifest(
         current.formatVersion(),
         manifest.partitionSpecId(),
         toCopy,
         current.specsById(),
-        newManifestPath,
+        newManifestPath.encryptingOutputFile(),
+        newManifestPath.keyMetadata().buffer(),
         snapshotId(),
         summaryBuilder);
   }

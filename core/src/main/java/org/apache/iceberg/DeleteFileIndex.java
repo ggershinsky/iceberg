@@ -32,6 +32,7 @@ import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
+import org.apache.iceberg.encryption.EncryptionManager;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.Expressions;
@@ -60,9 +61,9 @@ import org.apache.iceberg.util.Tasks;
 /**
  * An index of {@link DeleteFile delete files} by sequence number.
  *
- * <p>Use {@link #builderFor(FileIO, Iterable)} to construct an index, and {@link #forDataFile(long,
- * DataFile)} or {@link #forEntry(ManifestEntry)} to get the delete files to apply to a given data
- * file.
+ * <p>Use {@link #builderFor(FileIO, EncryptionManager, Iterable)} to construct an index, and {@link
+ * #forDataFile(long, DataFile)} or {@link #forEntry(ManifestEntry)} to get the delete files to
+ * apply to a given data file.
  */
 class DeleteFileIndex {
   private static final DeleteFile[] EMPTY_DELETES = new DeleteFile[0];
@@ -310,8 +311,9 @@ class DeleteFileIndex {
     return nullValueCount > 0;
   }
 
-  static Builder builderFor(FileIO io, Iterable<ManifestFile> deleteManifests) {
-    return new Builder(io, Sets.newHashSet(deleteManifests));
+  static Builder builderFor(
+      FileIO io, EncryptionManager encryption, Iterable<ManifestFile> deleteManifests) {
+    return new Builder(io, encryption, Sets.newHashSet(deleteManifests));
   }
 
   static Builder builderFor(Iterable<DeleteFile> deleteFiles) {
@@ -320,6 +322,7 @@ class DeleteFileIndex {
 
   static class Builder {
     private final FileIO io;
+    private final EncryptionManager encryption;
     private final Set<ManifestFile> deleteManifests;
     private final Iterable<DeleteFile> deleteFiles;
     private long minSequenceNumber = 0L;
@@ -331,14 +334,16 @@ class DeleteFileIndex {
     private ExecutorService executorService = null;
     private ScanMetrics scanMetrics = ScanMetrics.noop();
 
-    Builder(FileIO io, Set<ManifestFile> deleteManifests) {
+    Builder(FileIO io, EncryptionManager encryption, Set<ManifestFile> deleteManifests) {
       this.io = io;
+      this.encryption = encryption;
       this.deleteManifests = Sets.newHashSet(deleteManifests);
       this.deleteFiles = null;
     }
 
     Builder(Iterable<DeleteFile> deleteFiles) {
       this.io = null;
+      this.encryption = null;
       this.deleteManifests = null;
       this.deleteFiles = deleteFiles;
     }
@@ -516,7 +521,7 @@ class DeleteFileIndex {
       return Iterables.transform(
           matchingManifests,
           manifest ->
-              ManifestFiles.readDeleteManifest(manifest, io, specsById)
+              ManifestFiles.readDeleteManifest(manifest, io, encryption, specsById)
                   .filterRows(dataFilter)
                   .filterPartitions(partitionFilter)
                   .filterPartitions(partitionSet)

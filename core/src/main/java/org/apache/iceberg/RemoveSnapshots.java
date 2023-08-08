@@ -331,9 +331,9 @@ class RemoveSnapshots implements ExpireSnapshots {
     FileCleanupStrategy cleanupStrategy =
         incrementalCleanup
             ? new IncrementalFileCleanup(
-                ops.io(), deleteExecutorService, planExecutorService, deleteFunc)
+                ops.io(), ops.encryption(), deleteExecutorService, planExecutorService, deleteFunc)
             : new ReachableFileCleanup(
-                ops.io(), deleteExecutorService, planExecutorService, deleteFunc);
+                ops.io(), ops.encryption(), deleteExecutorService, planExecutorService, deleteFunc);
 
     cleanupStrategy.cleanFiles(base, current);
   }

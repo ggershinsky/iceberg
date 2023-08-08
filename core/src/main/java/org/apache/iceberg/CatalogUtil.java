@@ -30,6 +30,8 @@ import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.common.DynClasses;
 import org.apache.iceberg.common.DynConstructors;
 import org.apache.iceberg.common.DynMethods;
+import org.apache.iceberg.encryption.EncryptionManager;
+import org.apache.iceberg.encryption.PlaintextEncryptionManager;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.hadoop.Configurable;
@@ -81,9 +83,11 @@ public class CatalogUtil {
    * has been dropped in the metastore.
    *
    * @param io a FileIO to use for deletes
+   * @param encryption an EncryptionManager to use for delets
    * @param metadata the last valid TableMetadata instance for a dropped table.
    */
-  public static void dropTableData(FileIO io, TableMetadata metadata) {
+  public static void dropTableData(
+      FileIO io, EncryptionManager encryption, TableMetadata metadata) {
     // Reads and deletes are done using Tasks.foreach(...).suppressFailureWhenFinished to complete
     // as much of the delete work as possible and avoid orphaned data or manifest files.
 
@@ -107,7 +111,7 @@ public class CatalogUtil {
 
     if (gcEnabled) {
       // delete data files only if we are sure this won't corrupt other tables
-      deleteFiles(io, manifestsToDelete);
+      deleteFiles(io, encryption, manifestsToDelete);
     }
 
     deleteFiles(io, Iterables.transform(manifestsToDelete, ManifestFile::path), "manifest", true);
@@ -130,8 +134,14 @@ public class CatalogUtil {
     deleteFile(io, metadata.metadataFileLocation(), "metadata");
   }
 
+  /** Temp - for catalogs other than Hive and Hadoop; and for tests */
+  public static void dropTableData(FileIO io, TableMetadata metadata) {
+    dropTableData(io, PlaintextEncryptionManager.instance(), metadata);
+  }
+
   @SuppressWarnings("DangerousStringInternUsage")
-  private static void deleteFiles(FileIO io, Set<ManifestFile> allManifests) {
+  private static void deleteFiles(
+      FileIO io, EncryptionManager encryption, Set<ManifestFile> allManifests) {
     // keep track of deleted files in a map that can be cleaned up when memory runs low
     Map<String, Boolean> deletedFiles =
         new MapMaker().concurrencyLevel(ThreadPools.WORKER_THREAD_POOL_SIZE).weakKeys().makeMap();
@@ -145,7 +155,7 @@ public class CatalogUtil {
                 LOG.warn("Failed to get deleted files: this may cause orphaned data files", exc))
         .run(
             manifest -> {
-              try (ManifestReader<?> reader = ManifestFiles.open(manifest, io)) {
+              try (ManifestReader<?> reader = ManifestFiles.open(manifest, io, encryption, null)) {
                 List<String> pathsToDelete = Lists.newArrayList();
                 for (ManifestEntry<?> entry : reader.entries()) {
                   // intern the file path because the weak key map uses identity (==) instead of

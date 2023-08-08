@@ -30,6 +30,7 @@ import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.SnapshotRef;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
+import org.apache.iceberg.encryption.EncryptionManager;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
@@ -281,8 +282,18 @@ public class SnapshotUtil {
     return Iterables.transform(snapshots, Snapshot::snapshotId);
   }
 
+  // TODO deprecate / handle in revapi
   public static List<DataFile> newFiles(
       Long baseSnapshotId, long latestSnapshotId, Function<Long, Snapshot> lookup, FileIO io) {
+    return null;
+  }
+
+  public static List<DataFile> newFiles(
+      Long baseSnapshotId,
+      long latestSnapshotId,
+      Function<Long, Snapshot> lookup,
+      FileIO io,
+      EncryptionManager encryption) {
     List<DataFile> newFiles = Lists.newArrayList();
     Snapshot lastSnapshot = null;
     for (Snapshot currentSnapshot : ancestorsOf(latestSnapshotId, lookup)) {
@@ -291,7 +302,7 @@ public class SnapshotUtil {
         return newFiles;
       }
 
-      Iterables.addAll(newFiles, currentSnapshot.addedDataFiles(io));
+      Iterables.addAll(newFiles, currentSnapshot.addedDataFiles(io, encryption));
     }
 
     ValidationException.check(

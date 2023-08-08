@@ -72,7 +72,7 @@ class BaseIncrementalChangelogScan
             .toSet();
 
     ManifestGroup manifestGroup =
-        new ManifestGroup(table().io(), newDataManifests, ImmutableList.of())
+        new ManifestGroup(table().io(), table().encryption(), newDataManifests, ImmutableList.of())
             .specsById(table().specs())
             .caseSensitive(isCaseSensitive())
             .select(scanColumns())

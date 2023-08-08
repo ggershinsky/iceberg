@@ -23,6 +23,7 @@ import com.github.benmanes.caffeine.cache.LoadingCache;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import org.apache.iceberg.encryption.EncryptionManager;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.expressions.ManifestEvaluator;
@@ -135,6 +136,7 @@ abstract class BaseFilesTable extends BaseMetadataTable {
   static class ManifestReadTask extends BaseFileScanTask implements DataTask {
 
     private final FileIO io;
+    private final EncryptionManager encryption;
     private final Map<Integer, PartitionSpec> specsById;
     private final ManifestFile manifest;
     private final Schema dataTableSchema;
@@ -149,6 +151,7 @@ abstract class BaseFilesTable extends BaseMetadataTable {
         ResidualEvaluator residuals) {
       super(DataFiles.fromManifest(manifest), null, schemaString, specString, residuals);
       this.io = table.io();
+      this.encryption = table.encryption();
       this.specsById = Maps.newHashMap(table.specs());
       this.manifest = manifest;
       this.dataTableSchema = table.schema();
@@ -172,9 +175,10 @@ abstract class BaseFilesTable extends BaseMetadataTable {
     private CloseableIterable<? extends ContentFile<?>> files(Schema fileProjection) {
       switch (manifest.content()) {
         case DATA:
-          return ManifestFiles.read(manifest, io, specsById).project(fileProjection);
+          return ManifestFiles.read(manifest, io, encryption, specsById).project(fileProjection);
         case DELETES:
-          return ManifestFiles.readDeleteManifest(manifest, io, specsById).project(fileProjection);
+          return ManifestFiles.readDeleteManifest(manifest, io, encryption, specsById)
+              .project(fileProjection);
         default:
           throw new IllegalArgumentException(
               "Unsupported manifest content type:" + manifest.content());

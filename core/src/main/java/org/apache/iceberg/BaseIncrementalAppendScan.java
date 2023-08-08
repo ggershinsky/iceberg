@@ -74,7 +74,7 @@ class BaseIncrementalAppendScan
             .toSet();
 
     ManifestGroup manifestGroup =
-        new ManifestGroup(table().io(), manifests)
+        new ManifestGroup(table().io(), table().encryption(), manifests)
             .caseSensitive(isCaseSensitive())
             .select(scanColumns())
             .filterData(filter())

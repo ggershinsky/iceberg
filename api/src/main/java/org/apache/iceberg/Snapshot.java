@@ -21,6 +21,7 @@ package org.apache.iceberg;
 import java.io.Serializable;
 import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.encryption.EncryptionManager;
 import org.apache.iceberg.io.FileIO;
 
 /**
@@ -111,8 +112,15 @@ public interface Snapshot extends Serializable {
    * columns will be null.
    *
    * @param io a {@link FileIO} instance used for reading files from storage
+   * @param encryption a {@link EncryptionManager} instance used for decrypting manifest files
    * @return all data files added to the table in this snapshot.
    */
+  default Iterable<DataFile> addedDataFiles(FileIO io, EncryptionManager encryption) {
+    throw new UnsupportedOperationException(
+        this.getClass().getName() + " doesn't implement addedDataFiles with encryption");
+  }
+
+  /** Tests and benchmarks */
   Iterable<DataFile> addedDataFiles(FileIO io);
 
   /**
@@ -123,8 +131,15 @@ public interface Snapshot extends Serializable {
    * columns will be null.
    *
    * @param io a {@link FileIO} instance used for reading files from storage
+   * @param encryption a {@link EncryptionManager} instance used for decrypting manifest files
    * @return all data files removed from the table in this snapshot.
    */
+  default Iterable<DataFile> removedDataFiles(FileIO io, EncryptionManager encryption) {
+    throw new UnsupportedOperationException(
+        this.getClass().getName() + " doesn't implement removedDataFiles with encryption");
+  }
+
+  /** Tests only */
   Iterable<DataFile> removedDataFiles(FileIO io);
 
   /**
@@ -133,9 +148,18 @@ public interface Snapshot extends Serializable {
    * <p>The files returned include the following columns: file_path, file_format, partition,
    * record_count, and file_size_in_bytes. Other columns will be null.
    *
-   * @param io a {@link FileIO} instance used for reading files from storage
+   * @param fileIO a {@link FileIO} instance used for reading files from storage
+   * @param encryptionManager a {@link EncryptionManager} instance used for decrypting manifest
+   *     files
    * @return all delete files added to the table in this snapshot
    */
+  default Iterable<DeleteFile> addedDeleteFiles(
+      FileIO fileIO, EncryptionManager encryptionManager) {
+    throw new UnsupportedOperationException(
+        this.getClass().getName() + " doesn't implement addedDeleteFiles with encryption");
+  }
+
+  /** Tests only */
   default Iterable<DeleteFile> addedDeleteFiles(FileIO io) {
     throw new UnsupportedOperationException(
         this.getClass().getName() + " doesn't implement addedDeleteFiles");
@@ -147,9 +171,18 @@ public interface Snapshot extends Serializable {
    * <p>The files returned include the following columns: file_path, file_format, partition,
    * record_count, and file_size_in_bytes. Other columns will be null.
    *
-   * @param io a {@link FileIO} instance used for reading files from storage
+   * @param fileIO a {@link FileIO} instance used for reading files from storage
+   * @param encryptionManager a {@link EncryptionManager} instance used for decrypting manifest
+   *     files
    * @return all delete files removed from the table in this snapshot
    */
+  default Iterable<DeleteFile> removedDeleteFiles(
+      FileIO fileIO, EncryptionManager encryptionManager) {
+    throw new UnsupportedOperationException(
+        this.getClass().getName() + " doesn't implement removedDeleteFiles with encryption");
+  }
+
+  /** Tests only */
   default Iterable<DeleteFile> removedDeleteFiles(FileIO io) {
     throw new UnsupportedOperationException(
         this.getClass().getName() + " doesn't implement removedDeleteFiles");

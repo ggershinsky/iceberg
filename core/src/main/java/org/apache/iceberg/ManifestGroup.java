@@ -27,6 +27,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.function.BiFunction;
 import java.util.function.Predicate;
+import org.apache.iceberg.encryption.EncryptionManager;
 import org.apache.iceberg.expressions.Evaluator;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.Expressions;
@@ -49,6 +50,7 @@ class ManifestGroup {
   private static final Types.StructType EMPTY_STRUCT = Types.StructType.of();
 
   private final FileIO io;
+  private final EncryptionManager encryption;
   private final Set<ManifestFile> dataManifests;
   private final DeleteFileIndex.Builder deleteIndexBuilder;
   private Predicate<ManifestFile> manifestPredicate;
@@ -66,18 +68,23 @@ class ManifestGroup {
   private ExecutorService executorService;
   private ScanMetrics scanMetrics;
 
-  ManifestGroup(FileIO io, Iterable<ManifestFile> manifests) {
+  ManifestGroup(FileIO io, EncryptionManager encryption, Iterable<ManifestFile> manifests) {
     this(
         io,
+        encryption,
         Iterables.filter(manifests, manifest -> manifest.content() == ManifestContent.DATA),
         Iterables.filter(manifests, manifest -> manifest.content() == ManifestContent.DELETES));
   }
 
   ManifestGroup(
-      FileIO io, Iterable<ManifestFile> dataManifests, Iterable<ManifestFile> deleteManifests) {
+      FileIO io,
+      EncryptionManager encryption,
+      Iterable<ManifestFile> dataManifests,
+      Iterable<ManifestFile> deleteManifests) {
     this.io = io;
+    this.encryption = encryption;
     this.dataManifests = Sets.newHashSet(dataManifests);
-    this.deleteIndexBuilder = DeleteFileIndex.builderFor(io, deleteManifests);
+    this.deleteIndexBuilder = DeleteFileIndex.builderFor(io, encryption, deleteManifests);
     this.dataFilter = Expressions.alwaysTrue();
     this.fileFilter = Expressions.alwaysTrue();
     this.partitionFilter = Expressions.alwaysTrue();
@@ -317,7 +324,7 @@ class ManifestGroup {
               @Override
               public CloseableIterator<T> iterator() {
                 ManifestReader<DataFile> reader =
-                    ManifestFiles.read(manifest, io, specsById)
+                    ManifestFiles.read(manifest, io, encryption, specsById)
                         .filterRows(dataFilter)
                         .filterPartitions(partitionFilter)
                         .caseSensitive(caseSensitive)

@@ -21,10 +21,16 @@ package org.apache.iceberg;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.Map;
 import org.apache.iceberg.ManifestReader.FileType;
 import org.apache.iceberg.avro.AvroEncoderUtil;
 import org.apache.iceberg.avro.AvroSchemaUtil;
+import org.apache.iceberg.encryption.EncryptedFiles;
+import org.apache.iceberg.encryption.EncryptedInputFile;
+import org.apache.iceberg.encryption.EncryptionManager;
+import org.apache.iceberg.encryption.EncryptionUtil;
+import org.apache.iceberg.encryption.PlaintextEncryptionManager;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.ContentCache;
@@ -84,32 +90,35 @@ public class ManifestFiles {
     CONTENT_CACHES.cleanUp();
   }
 
+  // TODO deprecate
+  public static CloseableIterable<String> readPaths(ManifestFile manifest, FileIO io) {
+    return readPaths(manifest, io, PlaintextEncryptionManager.instance());
+  }
+
   /**
    * Returns a {@link CloseableIterable} of file paths in the {@link ManifestFile}.
    *
    * @param manifest a ManifestFile
    * @param io a FileIO
+   * @param encryption an EncryptionManager
    * @return a manifest reader
    */
-  public static CloseableIterable<String> readPaths(ManifestFile manifest, FileIO io) {
+  public static CloseableIterable<String> readPaths(
+      ManifestFile manifest, FileIO io, EncryptionManager encryption) {
     return CloseableIterable.transform(
-        read(manifest, io, null).select(ImmutableList.of("file_path")).liveEntries(),
+        read(manifest, io, encryption, null).select(ImmutableList.of("file_path")).liveEntries(),
         entry -> entry.file().path().toString());
   }
 
-  /**
-   * Returns a new {@link ManifestReader} for a {@link ManifestFile}.
-   *
-   * <p><em>Note:</em> Callers should use {@link ManifestFiles#read(ManifestFile, FileIO, Map)} to
-   * ensure the schema used by filters is the latest table schema. This should be used only when
-   * reading a manifest without filters.
-   *
-   * @param manifest a ManifestFile
-   * @param io a FileIO
-   * @return a manifest reader
-   */
+  /** Tests only. Used only when reading a manifest without filters. */
   public static ManifestReader<DataFile> read(ManifestFile manifest, FileIO io) {
     return read(manifest, io, null);
+  }
+
+  /** TODO Flink, Spark actions and benchmarks */
+  public static ManifestReader<DataFile> read(
+      ManifestFile manifest, FileIO io, Map<Integer, PartitionSpec> specsById) {
+    return read(manifest, io, PlaintextEncryptionManager.instance(), specsById);
   }
 
   /**
@@ -117,33 +126,35 @@ public class ManifestFiles {
    *
    * @param manifest a {@link ManifestFile}
    * @param io a {@link FileIO}
+   * @param encryption a {@link EncryptionManager}
    * @param specsById a Map from spec ID to partition spec
    * @return a {@link ManifestReader}
    */
   public static ManifestReader<DataFile> read(
-      ManifestFile manifest, FileIO io, Map<Integer, PartitionSpec> specsById) {
+      ManifestFile manifest,
+      FileIO io,
+      EncryptionManager encryption,
+      Map<Integer, PartitionSpec> specsById) {
     Preconditions.checkArgument(
         manifest.content() == ManifestContent.DATA,
         "Cannot read a delete manifest with a ManifestReader: %s",
         manifest);
-    InputFile file = newInputFile(io, manifest.path(), manifest.length());
+
+    InputFile inputFile;
+    if (manifest.keyMetadata() == null) { // unencrypted manifest
+      inputFile = newInputFile(io, manifest.path(), manifest.length());
+    } else {
+      EncryptedInputFile encryptedFile =
+          EncryptedFiles.encryptedInput(
+              newInputFile(
+                  io, manifest.path(), EncryptionUtil.gcmEncryptionLength(manifest.length())),
+              manifest.keyMetadata());
+      inputFile = encryption.decrypt(encryptedFile);
+    }
+
     InheritableMetadata inheritableMetadata = InheritableMetadataFactory.fromManifest(manifest);
     return new ManifestReader<>(
-        file, manifest.partitionSpecId(), specsById, inheritableMetadata, FileType.DATA_FILES);
-  }
-
-  /**
-   * Create a new {@link ManifestWriter}.
-   *
-   * <p>Manifests created by this writer have all entry snapshot IDs set to null. All entries will
-   * inherit the snapshot ID that will be assigned to the manifest on commit.
-   *
-   * @param spec {@link PartitionSpec} used to produce {@link DataFile} partition tuples
-   * @param outputFile the destination file location
-   * @return a manifest writer
-   */
-  public static ManifestWriter<DataFile> write(PartitionSpec spec, OutputFile outputFile) {
-    return write(1, spec, outputFile, null);
+        inputFile, manifest.partitionSpecId(), specsById, inheritableMetadata, FileType.DATA_FILES);
   }
 
   /**
@@ -152,19 +163,40 @@ public class ManifestFiles {
    * @param formatVersion a target format version
    * @param spec a {@link PartitionSpec}
    * @param outputFile an {@link OutputFile} where the manifest will be written
+   * @param keyMetadata an key_metadata ByteBuffer, used for manifest encryption
    * @param snapshotId a snapshot ID for the manifest entries, or null for an inherited ID
    * @return a manifest writer
    */
   public static ManifestWriter<DataFile> write(
-      int formatVersion, PartitionSpec spec, OutputFile outputFile, Long snapshotId) {
+      int formatVersion,
+      PartitionSpec spec,
+      OutputFile outputFile,
+      ByteBuffer keyMetadata,
+      Long snapshotId) {
     switch (formatVersion) {
       case 1:
         return new ManifestWriter.V1Writer(spec, outputFile, snapshotId);
       case 2:
-        return new ManifestWriter.V2Writer(spec, outputFile, snapshotId);
+        return new ManifestWriter.V2Writer(spec, outputFile, keyMetadata, snapshotId);
     }
     throw new UnsupportedOperationException(
         "Cannot write manifest for table version: " + formatVersion);
+  }
+
+  /**
+   * TODO Spark procedures; Flink; and tests
+   *
+   * <p>Manifests created by this writer have all entry snapshot IDs set to null. All entries will
+   * inherit the snapshot ID that will be assigned to the manifest on commit.
+   */
+  public static ManifestWriter<DataFile> write(PartitionSpec spec, OutputFile outputFile) {
+    return write(1, spec, outputFile, null);
+  }
+
+  /** TODO Spark actions, benchmarks; Flink; and tests */
+  public static ManifestWriter<DataFile> write(
+      int formatVersion, PartitionSpec spec, OutputFile outputFile, Long snapshotId) {
+    return write(formatVersion, spec, outputFile, null, snapshotId); // TODO GG null
   }
 
   /**
@@ -172,19 +204,45 @@ public class ManifestFiles {
    *
    * @param manifest a {@link ManifestFile}
    * @param io a {@link FileIO}
+   * @param encryption a {@link EncryptionManager}
    * @param specsById a Map from spec ID to partition spec
    * @return a {@link ManifestReader}
    */
   public static ManifestReader<DeleteFile> readDeleteManifest(
-      ManifestFile manifest, FileIO io, Map<Integer, PartitionSpec> specsById) {
+      ManifestFile manifest,
+      FileIO io,
+      EncryptionManager encryption,
+      Map<Integer, PartitionSpec> specsById) {
     Preconditions.checkArgument(
         manifest.content() == ManifestContent.DELETES,
         "Cannot read a data manifest with a DeleteManifestReader: %s",
         manifest);
-    InputFile file = newInputFile(io, manifest.path(), manifest.length());
+
+    InputFile inputFile;
+    if (manifest.keyMetadata() == null) { // unencrypted manifest
+      inputFile = newInputFile(io, manifest.path(), manifest.length());
+    } else {
+      EncryptedInputFile encryptedFile =
+          EncryptedFiles.encryptedInput(
+              newInputFile(
+                  io, manifest.path(), EncryptionUtil.gcmEncryptionLength(manifest.length())),
+              manifest.keyMetadata());
+      inputFile = encryption.decrypt(encryptedFile);
+    }
+
     InheritableMetadata inheritableMetadata = InheritableMetadataFactory.fromManifest(manifest);
     return new ManifestReader<>(
-        file, manifest.partitionSpecId(), specsById, inheritableMetadata, FileType.DELETE_FILES);
+        inputFile,
+        manifest.partitionSpecId(),
+        specsById,
+        inheritableMetadata,
+        FileType.DELETE_FILES);
+  }
+
+  /** TODO Spark actions, Flink; and tests */
+  public static ManifestReader<DeleteFile> readDeleteManifest(
+      ManifestFile manifest, FileIO io, Map<Integer, PartitionSpec> specsById) {
+    return readDeleteManifest(manifest, io, PlaintextEncryptionManager.instance(), specsById);
   }
 
   /**
@@ -197,15 +255,25 @@ public class ManifestFiles {
    * @return a manifest writer
    */
   public static ManifestWriter<DeleteFile> writeDeleteManifest(
-      int formatVersion, PartitionSpec spec, OutputFile outputFile, Long snapshotId) {
+      int formatVersion,
+      PartitionSpec spec,
+      OutputFile outputFile,
+      ByteBuffer keyMetadata,
+      Long snapshotId) {
     switch (formatVersion) {
       case 1:
         throw new IllegalArgumentException("Cannot write delete files in a v1 table");
       case 2:
-        return new ManifestWriter.V2DeleteWriter(spec, outputFile, snapshotId);
+        return new ManifestWriter.V2DeleteWriter(spec, outputFile, keyMetadata, snapshotId);
     }
     throw new UnsupportedOperationException(
         "Cannot write manifest for table version: " + formatVersion);
+  }
+
+  // TODO Flink; and tests
+  public static ManifestWriter<DeleteFile> writeDeleteManifest(
+      int formatVersion, PartitionSpec spec, OutputFile outputFile, Long snapshotId) {
+    return writeDeleteManifest(formatVersion, spec, outputFile, null, snapshotId);
   }
 
   /**
@@ -233,17 +301,16 @@ public class ManifestFiles {
     return AvroEncoderUtil.decode(manifestData);
   }
 
-  static ManifestReader<?> open(ManifestFile manifest, FileIO io) {
-    return open(manifest, io, null);
-  }
-
   static ManifestReader<?> open(
-      ManifestFile manifest, FileIO io, Map<Integer, PartitionSpec> specsById) {
+      ManifestFile manifest,
+      FileIO io,
+      EncryptionManager encryption,
+      Map<Integer, PartitionSpec> specsById) {
     switch (manifest.content()) {
       case DATA:
-        return ManifestFiles.read(manifest, io, specsById);
+        return ManifestFiles.read(manifest, io, encryption, specsById);
       case DELETES:
-        return ManifestFiles.readDeleteManifest(manifest, io, specsById);
+        return ManifestFiles.readDeleteManifest(manifest, io, encryption, specsById);
     }
     throw new UnsupportedOperationException(
         "Cannot read unknown manifest type: " + manifest.content());
@@ -255,6 +322,7 @@ public class ManifestFiles {
       InputFile toCopy,
       Map<Integer, PartitionSpec> specsById,
       OutputFile outputFile,
+      ByteBuffer keyMetadata,
       long snapshotId,
       SnapshotSummary.Builder summaryBuilder) {
     // use metadata that will add the current snapshot's ID for the rewrite
@@ -265,6 +333,7 @@ public class ManifestFiles {
           formatVersion,
           reader,
           outputFile,
+          keyMetadata,
           snapshotId,
           summaryBuilder,
           ManifestEntry.Status.ADDED);
@@ -279,6 +348,7 @@ public class ManifestFiles {
       InputFile toCopy,
       Map<Integer, PartitionSpec> specsById,
       OutputFile outputFile,
+      ByteBuffer keyMetadata,
       long snapshotId,
       SnapshotSummary.Builder summaryBuilder) {
     // for a rewritten manifest all snapshot ids should be set. use empty metadata to throw an
@@ -290,6 +360,7 @@ public class ManifestFiles {
           formatVersion,
           reader,
           outputFile,
+          keyMetadata,
           snapshotId,
           summaryBuilder,
           ManifestEntry.Status.EXISTING);
@@ -303,10 +374,12 @@ public class ManifestFiles {
       int formatVersion,
       ManifestReader<DataFile> reader,
       OutputFile outputFile,
+      ByteBuffer manifestKeyMetadata,
       long snapshotId,
       SnapshotSummary.Builder summaryBuilder,
       ManifestEntry.Status allowedEntryStatus) {
-    ManifestWriter<DataFile> writer = write(formatVersion, reader.spec(), outputFile, snapshotId);
+    ManifestWriter<DataFile> writer =
+        write(formatVersion, reader.spec(), outputFile, manifestKeyMetadata, snapshotId);
     boolean threw = true;
     try {
       for (ManifestEntry<DataFile> entry : reader.entries()) {

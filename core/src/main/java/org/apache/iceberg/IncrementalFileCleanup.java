@@ -24,6 +24,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
+import org.apache.iceberg.encryption.EncryptionManager;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
@@ -40,10 +41,11 @@ class IncrementalFileCleanup extends FileCleanupStrategy {
 
   IncrementalFileCleanup(
       FileIO fileIO,
+      EncryptionManager encryption,
       ExecutorService deleteExecutorService,
       ExecutorService planExecutorService,
       Consumer<String> deleteFunc) {
-    super(fileIO, deleteExecutorService, planExecutorService, deleteFunc);
+    super(fileIO, encryption, deleteExecutorService, planExecutorService, deleteFunc);
   }
 
   @Override
@@ -286,7 +288,7 @@ class IncrementalFileCleanup extends FileCleanupStrategy {
             manifest -> {
               // the manifest has deletes, scan it to find files to delete
               try (ManifestReader<?> reader =
-                  ManifestFiles.open(manifest, fileIO, current.specsById())) {
+                  ManifestFiles.open(manifest, fileIO, encryptionManager, current.specsById())) {
                 for (ManifestEntry<?> entry : reader.entries()) {
                   // if the snapshot ID of the DELETE entry is no longer valid, the data can be
                   // deleted
@@ -312,7 +314,7 @@ class IncrementalFileCleanup extends FileCleanupStrategy {
             manifest -> {
               // the manifest has deletes, scan it to find files to delete
               try (ManifestReader<?> reader =
-                  ManifestFiles.open(manifest, fileIO, current.specsById())) {
+                  ManifestFiles.open(manifest, fileIO, encryptionManager, current.specsById())) {
                 for (ManifestEntry<?> entry : reader.entries()) {
                   // delete any ADDED file from manifests that were reverted
                   if (entry.status() == ManifestEntry.Status.ADDED) {

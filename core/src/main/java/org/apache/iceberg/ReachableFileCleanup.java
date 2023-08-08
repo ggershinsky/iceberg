@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import org.apache.iceberg.encryption.EncryptionManager;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
@@ -42,10 +43,11 @@ class ReachableFileCleanup extends FileCleanupStrategy {
 
   ReachableFileCleanup(
       FileIO fileIO,
+      EncryptionManager encryptionManager,
       ExecutorService deleteExecutorService,
       ExecutorService planExecutorService,
       Consumer<String> deleteFunc) {
-    super(fileIO, deleteExecutorService, planExecutorService, deleteFunc);
+    super(fileIO, encryptionManager, deleteExecutorService, planExecutorService, deleteFunc);
   }
 
   @Override
@@ -164,7 +166,8 @@ class ReachableFileCleanup extends FileCleanupStrategy {
                     "Failed to determine live files in manifest {}. Retrying", item.path(), exc))
         .run(
             manifest -> {
-              try (CloseableIterable<String> paths = ManifestFiles.readPaths(manifest, fileIO)) {
+              try (CloseableIterable<String> paths =
+                  ManifestFiles.readPaths(manifest, fileIO, encryptionManager)) {
                 paths.forEach(filesToDelete::add);
               } catch (IOException e) {
                 throw new RuntimeIOException(e, "Failed to read manifest file: %s", manifest);
@@ -192,7 +195,8 @@ class ReachableFileCleanup extends FileCleanupStrategy {
                 }
 
                 // Remove all the live files from the candidate deletion set
-                try (CloseableIterable<String> paths = ManifestFiles.readPaths(manifest, fileIO)) {
+                try (CloseableIterable<String> paths =
+                    ManifestFiles.readPaths(manifest, fileIO, encryptionManager)) {
                   paths.forEach(filesToDelete::remove);
                 } catch (IOException e) {
                   throw new RuntimeIOException(e, "Failed to read manifest file: %s", manifest);

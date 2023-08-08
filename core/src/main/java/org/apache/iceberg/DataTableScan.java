@@ -70,7 +70,7 @@ public class DataTableScan extends BaseTableScan {
     scanMetrics().totalDataManifests().increment((long) dataManifests.size());
     scanMetrics().totalDeleteManifests().increment((long) deleteManifests.size());
     ManifestGroup manifestGroup =
-        new ManifestGroup(io, dataManifests, deleteManifests)
+        new ManifestGroup(io, table().encryption(), dataManifests, deleteManifests)
             .caseSensitive(isCaseSensitive())
             .select(scanColumns())
             .filterData(filter())

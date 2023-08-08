@@ -23,6 +23,8 @@ import java.io.UncheckedIOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.encryption.EncryptionManager;
+import org.apache.iceberg.encryption.PlaintextEncryptionManager;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
@@ -184,32 +186,53 @@ class BaseSnapshot implements Snapshot {
 
   @Override
   public List<DataFile> addedDataFiles(FileIO fileIO) {
+    return addedDataFiles(fileIO, PlaintextEncryptionManager.instance());
+  }
+
+  @Override
+  public List<DataFile> addedDataFiles(FileIO fileIO, EncryptionManager encryptionManager) {
     if (addedDataFiles == null) {
-      cacheDataFileChanges(fileIO);
+      cacheDataFileChanges(fileIO, encryptionManager);
     }
     return addedDataFiles;
   }
 
   @Override
   public List<DataFile> removedDataFiles(FileIO fileIO) {
+    return removedDataFiles(fileIO, PlaintextEncryptionManager.instance());
+  }
+
+  @Override
+  public List<DataFile> removedDataFiles(FileIO fileIO, EncryptionManager encryptionManager) {
     if (removedDataFiles == null) {
-      cacheDataFileChanges(fileIO);
+      cacheDataFileChanges(fileIO, encryptionManager);
     }
     return removedDataFiles;
   }
 
   @Override
   public Iterable<DeleteFile> addedDeleteFiles(FileIO fileIO) {
+    return addedDeleteFiles(fileIO, PlaintextEncryptionManager.instance());
+  }
+
+  @Override
+  public Iterable<DeleteFile> addedDeleteFiles(FileIO fileIO, EncryptionManager encryptionManager) {
     if (addedDeleteFiles == null) {
-      cacheDeleteFileChanges(fileIO);
+      cacheDeleteFileChanges(fileIO, encryptionManager);
     }
     return addedDeleteFiles;
   }
 
   @Override
   public Iterable<DeleteFile> removedDeleteFiles(FileIO fileIO) {
+    return removedDeleteFiles(fileIO, PlaintextEncryptionManager.instance());
+  }
+
+  @Override
+  public Iterable<DeleteFile> removedDeleteFiles(
+      FileIO fileIO, EncryptionManager encryptionManager) {
     if (removedDeleteFiles == null) {
-      cacheDeleteFileChanges(fileIO);
+      cacheDeleteFileChanges(fileIO, encryptionManager);
     }
     return removedDeleteFiles;
   }
@@ -219,7 +242,7 @@ class BaseSnapshot implements Snapshot {
     return manifestListLocation;
   }
 
-  private void cacheDeleteFileChanges(FileIO fileIO) {
+  private void cacheDeleteFileChanges(FileIO fileIO, EncryptionManager encryptionManager) {
     Preconditions.checkArgument(fileIO != null, "Cannot cache delete file changes: FileIO is null");
 
     ImmutableList.Builder<DeleteFile> adds = ImmutableList.builder();
@@ -231,7 +254,7 @@ class BaseSnapshot implements Snapshot {
 
     for (ManifestFile manifest : changedManifests) {
       try (ManifestReader<DeleteFile> reader =
-          ManifestFiles.readDeleteManifest(manifest, fileIO, null)) {
+          ManifestFiles.readDeleteManifest(manifest, fileIO, encryptionManager, null)) {
         for (ManifestEntry<DeleteFile> entry : reader.entries()) {
           switch (entry.status()) {
             case ADDED:
@@ -253,7 +276,7 @@ class BaseSnapshot implements Snapshot {
     this.removedDeleteFiles = deletes.build();
   }
 
-  private void cacheDataFileChanges(FileIO fileIO) {
+  private void cacheDataFileChanges(FileIO fileIO, EncryptionManager encryptionManager) {
     Preconditions.checkArgument(fileIO != null, "Cannot cache data file changes: FileIO is null");
 
     ImmutableList.Builder<DataFile> adds = ImmutableList.builder();
@@ -264,7 +287,7 @@ class BaseSnapshot implements Snapshot {
         Iterables.filter(
             dataManifests(fileIO), manifest -> Objects.equal(manifest.snapshotId(), snapshotId));
     try (CloseableIterable<ManifestEntry<DataFile>> entries =
-        new ManifestGroup(fileIO, changedManifests).ignoreExisting().entries()) {
+        new ManifestGroup(fileIO, encryptionManager, changedManifests).ignoreExisting().entries()) {
       for (ManifestEntry<DataFile> entry : entries) {
         switch (entry.status()) {
           case ADDED:

@@ -289,7 +289,8 @@ public class PositionDeletesTable extends BaseMetadataTable {
 
           // Filter partitions
           CloseableIterable<ManifestEntry<DeleteFile>> deleteFileEntries =
-              ManifestFiles.readDeleteManifest(manifest, table().io(), transformedSpecs)
+              ManifestFiles.readDeleteManifest(
+                      manifest, table().io(), table().encryption(), transformedSpecs)
                   .caseSensitive(isCaseSensitive())
                   .select(scanColumns())
                   .filterRows(filter())

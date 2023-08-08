@@ -32,10 +32,11 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import org.apache.iceberg.encryption.EncryptedFiles;
+import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.io.InputFile;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
@@ -154,14 +155,19 @@ public class BaseRewriteManifests extends SnapshotProducer<RewriteManifests>
 
   private ManifestFile copyManifest(ManifestFile manifest) {
     TableMetadata current = ops.current();
-    InputFile toCopy = ops.io().newInputFile(manifest.path());
-    OutputFile newFile = newManifestOutput();
+    InputFile toCopy =
+        ops.encryption()
+            .decrypt(
+                EncryptedFiles.encryptedInput(
+                    ops.io().newInputFile(manifest.path()), manifest.keyMetadata()));
+    EncryptedOutputFile newFile = newEncryptedManifest();
     return ManifestFiles.copyRewriteManifest(
         current.formatVersion(),
         manifest.partitionSpecId(),
         toCopy,
         specsById,
-        newFile,
+        newFile.encryptingOutputFile(),
+        newFile.keyMetadata().buffer(),
         snapshotId(),
         summaryBuilder);
   }
@@ -246,7 +252,8 @@ public class BaseRewriteManifests extends SnapshotProducer<RewriteManifests>
                 } else {
                   rewrittenManifests.add(manifest);
                   try (ManifestReader<DataFile> reader =
-                      ManifestFiles.read(manifest, ops.io(), ops.current().specsById())
+                      ManifestFiles.read(
+                              manifest, ops.io(), ops.encryption(), ops.current().specsById())
                           .select(Collections.singletonList("*"))) {
                     reader
                         .liveEntries()

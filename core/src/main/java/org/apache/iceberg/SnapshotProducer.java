@@ -43,6 +43,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.events.CreateSnapshotEvent;
 import org.apache.iceberg.events.Listeners;
 import org.apache.iceberg.exceptions.CleanableFailure;
@@ -499,21 +500,39 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
                         "snap-%d-%d-%s", snapshotId(), attempt.incrementAndGet(), commitUUID))));
   }
 
+  // TODO deprecate / handle in revapi
   protected OutputFile newManifestOutput() {
-    return ops.io()
-        .newOutputFile(
-            ops.metadataFileLocation(
-                FileFormat.AVRO.addExtension(commitUUID + "-m" + manifestCount.getAndIncrement())));
+    return null;
+  }
+
+  protected EncryptedOutputFile newEncryptedManifest() {
+    OutputFile outputFile =
+        ops.io()
+            .newOutputFile(
+                ops.metadataFileLocation(
+                    FileFormat.AVRO.addExtension(
+                        commitUUID + "-m" + manifestCount.getAndIncrement())));
+    return ops.encryption().encrypt(outputFile);
   }
 
   protected ManifestWriter<DataFile> newManifestWriter(PartitionSpec spec) {
+    EncryptedOutputFile encryptedFile = newEncryptedManifest();
     return ManifestFiles.write(
-        ops.current().formatVersion(), spec, newManifestOutput(), snapshotId());
+        ops.current().formatVersion(),
+        spec,
+        encryptedFile.encryptingOutputFile(),
+        encryptedFile.keyMetadata().buffer(),
+        snapshotId());
   }
 
   protected ManifestWriter<DeleteFile> newDeleteManifestWriter(PartitionSpec spec) {
+    EncryptedOutputFile encryptedFile = newEncryptedManifest();
     return ManifestFiles.writeDeleteManifest(
-        ops.current().formatVersion(), spec, newManifestOutput(), snapshotId());
+        ops.current().formatVersion(),
+        spec,
+        encryptedFile.encryptingOutputFile(),
+        encryptedFile.keyMetadata().buffer(),
+        snapshotId());
   }
 
   protected RollingManifestWriter<DataFile> newRollingManifestWriter(PartitionSpec spec) {
@@ -526,11 +545,12 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
   }
 
   protected ManifestReader<DataFile> newManifestReader(ManifestFile manifest) {
-    return ManifestFiles.read(manifest, ops.io(), ops.current().specsById());
+    return ManifestFiles.read(manifest, ops.io(), ops.encryption(), ops.current().specsById());
   }
 
   protected ManifestReader<DeleteFile> newDeleteManifestReader(ManifestFile manifest) {
-    return ManifestFiles.readDeleteManifest(manifest, ops.io(), ops.current().specsById());
+    return ManifestFiles.readDeleteManifest(
+        manifest, ops.io(), ops.encryption(), ops.current().specsById());
   }
 
   protected long snapshotId() {
@@ -550,7 +570,7 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
 
   private static ManifestFile addMetadata(TableOperations ops, ManifestFile manifest) {
     try (ManifestReader<DataFile> reader =
-        ManifestFiles.read(manifest, ops.io(), ops.current().specsById())) {
+        ManifestFiles.read(manifest, ops.io(), ops.encryption(), ops.current().specsById())) {
       PartitionSummary stats = new PartitionSummary(ops.current().spec(manifest.partitionSpecId()));
       int addedFiles = 0;
       long addedRows = 0L;

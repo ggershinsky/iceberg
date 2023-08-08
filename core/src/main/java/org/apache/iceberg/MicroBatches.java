@@ -23,6 +23,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import org.apache.iceberg.encryption.EncryptionManager;
+import org.apache.iceberg.encryption.PlaintextEncryptionManager;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.CloseableIterator;
 import org.apache.iceberg.io.FileIO;
@@ -51,6 +53,7 @@ public class MicroBatches {
     return skipManifests(manifestIndexes, startFileIndex);
   }
 
+  // TODO Deprecate / handle in revapi
   public static CloseableIterable<FileScanTask> openManifestFile(
       FileIO io,
       Map<Integer, PartitionSpec> specsById,
@@ -58,9 +61,20 @@ public class MicroBatches {
       Snapshot snapshot,
       ManifestFile manifestFile,
       boolean scanAllFiles) {
+    return null;
+  }
+
+  public static CloseableIterable<FileScanTask> openManifestFile(
+      FileIO io,
+      EncryptionManager encryption,
+      Map<Integer, PartitionSpec> specsById,
+      boolean caseSensitive,
+      Snapshot snapshot,
+      ManifestFile manifestFile,
+      boolean scanAllFiles) {
 
     ManifestGroup manifestGroup =
-        new ManifestGroup(io, ImmutableList.of(manifestFile))
+        new ManifestGroup(io, encryption, ImmutableList.of(manifestFile))
             .specsById(specsById)
             .caseSensitive(caseSensitive);
     if (!scanAllFiles) {
@@ -175,8 +189,13 @@ public class MicroBatches {
     }
   }
 
+  /** Tests only */
   public static MicroBatchBuilder from(Snapshot snapshot, FileIO io) {
-    return new MicroBatchBuilder(snapshot, io);
+    return from(snapshot, io, PlaintextEncryptionManager.instance());
+  }
+
+  public static MicroBatchBuilder from(Snapshot snapshot, FileIO io, EncryptionManager encryption) {
+    return new MicroBatchBuilder(snapshot, io, encryption);
   }
 
   public static class MicroBatchBuilder {
@@ -184,12 +203,14 @@ public class MicroBatches {
 
     private final Snapshot snapshot;
     private final FileIO io;
+    private final EncryptionManager encryption;
     private boolean caseSensitive;
     private Map<Integer, PartitionSpec> specsById;
 
-    private MicroBatchBuilder(Snapshot snapshot, FileIO io) {
+    private MicroBatchBuilder(Snapshot snapshot, FileIO io, EncryptionManager encryption) {
       this.snapshot = snapshot;
       this.io = io;
+      this.encryption = encryption;
       this.caseSensitive = true;
     }
 
@@ -206,7 +227,7 @@ public class MicroBatches {
     public MicroBatch generate(long startFileIndex, long targetSizeInBytes, boolean scanAllFiles) {
       return generate(
           startFileIndex,
-          Iterables.size(snapshot.addedDataFiles(io)),
+          Iterables.size(snapshot.addedDataFiles(io, encryption)),
           targetSizeInBytes,
           scanAllFiles);
     }
@@ -263,6 +284,7 @@ public class MicroBatches {
         try (CloseableIterable<FileScanTask> taskIterable =
                 openManifestFile(
                     io,
+                    encryption,
                     specsById,
                     caseSensitive,
                     snapshot,

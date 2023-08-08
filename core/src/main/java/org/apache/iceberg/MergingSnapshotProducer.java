@@ -30,6 +30,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import org.apache.iceberg.encryption.EncryptedFiles;
+import org.apache.iceberg.encryption.EncryptedInputFile;
+import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.events.CreateSnapshotEvent;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.exceptions.ValidationException;
@@ -38,7 +41,6 @@ import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.CloseableIterator;
 import org.apache.iceberg.io.InputFile;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.base.Predicate;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
@@ -275,14 +277,18 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
 
   private ManifestFile copyManifest(ManifestFile manifest) {
     TableMetadata current = ops.current();
-    InputFile toCopy = ops.io().newInputFile(manifest.path());
-    OutputFile newManifestPath = newManifestOutput();
+    EncryptedInputFile encryptedFile =
+        EncryptedFiles.encryptedInput(
+            ops.io().newInputFile(manifest.path()), manifest.keyMetadata());
+    InputFile toCopy = ops.encryption().decrypt(encryptedFile);
+    EncryptedOutputFile newManifestPath = newEncryptedManifest();
     return ManifestFiles.copyAppendManifest(
         current.formatVersion(),
         manifest.partitionSpecId(),
         toCopy,
         current.specsById(),
-        newManifestPath,
+        newManifestPath.encryptingOutputFile(),
+        newManifestPath.keyMetadata().buffer(),
         snapshotId(),
         appendedManifestsSummary);
   }
@@ -379,7 +385,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     Set<Long> newSnapshots = history.second();
 
     ManifestGroup manifestGroup =
-        new ManifestGroup(ops.io(), manifests, ImmutableList.of())
+        new ManifestGroup(ops.io(), ops.encryption(), manifests, ImmutableList.of())
             .caseSensitive(caseSensitive)
             .filterManifestEntries(entry -> newSnapshots.contains(entry.snapshotId()))
             .specsById(base.specsById())
@@ -542,7 +548,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
       Snapshot parent) {
     // if there is no current table state, return empty delete file index
     if (parent == null || base.formatVersion() < 2) {
-      return DeleteFileIndex.builderFor(ops.io(), ImmutableList.of())
+      return DeleteFileIndex.builderFor(ops.io(), ops.encryption(), ImmutableList.of())
           .specsById(base.specsById())
           .build();
     }
@@ -650,7 +656,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     Set<Long> newSnapshots = history.second();
 
     ManifestGroup manifestGroup =
-        new ManifestGroup(ops.io(), manifests, ImmutableList.of())
+        new ManifestGroup(ops.io(), ops.encryption(), manifests, ImmutableList.of())
             .caseSensitive(caseSensitive)
             .filterManifestEntries(entry -> newSnapshots.contains(entry.snapshotId()))
             .filterManifestEntries(entry -> entry.status().equals(ManifestEntry.Status.DELETED))
@@ -689,7 +695,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
       Expression dataFilter,
       PartitionSet partitionSet) {
     DeleteFileIndex.Builder builder =
-        DeleteFileIndex.builderFor(ops.io(), deleteManifests)
+        DeleteFileIndex.builderFor(ops.io(), ops.encryption(), deleteManifests)
             .afterSequenceNumber(startingSequenceNumber)
             .caseSensitive(caseSensitive)
             .specsById(ops.current().specsById());
@@ -730,7 +736,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     Set<Long> newSnapshots = history.second();
 
     ManifestGroup matchingDeletesGroup =
-        new ManifestGroup(ops.io(), manifests, ImmutableList.of())
+        new ManifestGroup(ops.io(), ops.encryption(), manifests, ImmutableList.of())
             .filterManifestEntries(
                 entry ->
                     entry.status() != ManifestEntry.Status.ADDED

@@ -22,6 +22,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
 import org.apache.iceberg.avro.Avro;
+import org.apache.iceberg.encryption.EncryptionManager;
 import org.apache.iceberg.exceptions.NotFoundException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
@@ -35,16 +36,20 @@ abstract class FileCleanupStrategy {
   private static final Logger LOG = LoggerFactory.getLogger(FileCleanupStrategy.class);
 
   protected final FileIO fileIO;
+
+  protected final EncryptionManager encryptionManager;
   protected final ExecutorService planExecutorService;
   private final Consumer<String> deleteFunc;
   private final ExecutorService deleteExecutorService;
 
   protected FileCleanupStrategy(
       FileIO fileIO,
+      EncryptionManager encryption,
       ExecutorService deleteExecutorService,
       ExecutorService planExecutorService,
       Consumer<String> deleteFunc) {
     this.fileIO = fileIO;
+    this.encryptionManager = encryption;
     this.deleteExecutorService = deleteExecutorService;
     this.planExecutorService = planExecutorService;
     this.deleteFunc = deleteFunc;
