@@ -34,7 +34,9 @@ import static org.apache.iceberg.TableProperties.SNAPSHOT_ID_INHERITANCE_ENABLED
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -44,6 +46,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.apache.iceberg.encryption.EncryptedOutputFile;
+import org.apache.iceberg.encryption.EncryptionKeyMetadata;
+import org.apache.iceberg.encryption.EncryptionManager;
+import org.apache.iceberg.encryption.EncryptionUtil;
+import org.apache.iceberg.encryption.NativeEncryptionKeyMetadata;
+import org.apache.iceberg.encryption.StandardEncryptionManager;
 import org.apache.iceberg.events.CreateSnapshotEvent;
 import org.apache.iceberg.events.Listeners;
 import org.apache.iceberg.exceptions.CleanableFailure;
@@ -236,10 +243,36 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
 
     OutputFile manifestList = manifestListPath();
 
+    EncryptionManager encryptionManager = ops.encryption();
+    EncryptedOutputFile encryptedManifestList = encryptionManager.encrypt(manifestList);
+
+    long manifestListLength;
+    String manifestListKeyMetadata = null;
+    if (encryptedManifestList.keyMetadata() != null
+        && encryptedManifestList.keyMetadata() != EncryptionKeyMetadata.EMPTY) {
+      Preconditions.checkArgument(
+          encryptionManager instanceof StandardEncryptionManager,
+          "Encryption manager for encrypted manifest list files can currently only be an instance of "
+              + StandardEncryptionManager.class);
+      NativeEncryptionKeyMetadata keyMetadata =
+          (NativeEncryptionKeyMetadata) encryptedManifestList.keyMetadata();
+      ByteBuffer manifestListEncryptionKey = keyMetadata.encryptionKey();
+      ByteBuffer wrappedEncryptionKey =
+          ((StandardEncryptionManager) encryptionManager).wrapKey(manifestListEncryptionKey);
+
+      ByteBuffer manifestListAADPrefix = keyMetadata.aadPrefix();
+      manifestListKeyMetadata =
+          Base64.getEncoder()
+              .encodeToString(
+                  EncryptionUtil.createKeyMetadata(wrappedEncryptionKey, manifestListAADPrefix)
+                      .buffer()
+                      .array());
+    }
+
     try (ManifestListWriter writer =
         ManifestLists.write(
             ops.current().formatVersion(),
-            manifestList,
+            encryptedManifestList.encryptingOutputFile(),
             snapshotId(),
             parentSnapshotId,
             sequenceNumber)) {
@@ -257,6 +290,7 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
 
       writer.addAll(Arrays.asList(manifestFiles));
 
+      manifestListLength = writer.length();
     } catch (IOException e) {
       throw new RuntimeIOException(e, "Failed to write manifest list file");
     }
@@ -269,7 +303,9 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
         operation(),
         summary(base),
         base.currentSchemaId(),
-        manifestList.location());
+        manifestList.location(),
+//        manifestListLength,
+        manifestListKeyMetadata);
   }
 
   protected abstract Map<String, String> summary();
@@ -426,7 +462,7 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
       // id in case another commit was added between this commit and the refresh.
       Snapshot saved = ops.refresh().snapshot(newSnapshotId.get());
       if (saved != null) {
-        cleanUncommitted(Sets.newHashSet(saved.allManifests(ops.io())));
+        cleanUncommitted(Sets.newHashSet(saved.allManifests(ops.io(), ops.encryption())));
         // also clean up unused manifest lists created by multiple attempts
         for (String manifestList : manifestLists) {
           if (!saved.manifestListLocation().equals(manifestList)) {

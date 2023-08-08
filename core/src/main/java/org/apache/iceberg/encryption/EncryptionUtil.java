@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.encryption;
 
+import java.nio.ByteBuffer;
 import java.util.Map;
 import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.TableProperties;
@@ -29,6 +30,14 @@ import org.apache.iceberg.util.PropertyUtil;
 public class EncryptionUtil {
 
   private EncryptionUtil() {}
+
+  public static EncryptionKeyMetadata createKeyMetadata(ByteBuffer key, ByteBuffer aadPrefix) {
+    return new StandardKeyMetadata(key.array(), aadPrefix.array());
+  }
+
+  public static NativeEncryptionKeyMetadata parseKeyMetadata(ByteBuffer keyMetadataBytes) {
+    return StandardKeyMetadata.parse(keyMetadataBytes);
+  }
 
   public static long gcmEncryptionLength(long plainFileLength) {
     int numberOfFullBlocks = Math.toIntExact(plainFileLength / Ciphers.PLAIN_BLOCK_SIZE);
