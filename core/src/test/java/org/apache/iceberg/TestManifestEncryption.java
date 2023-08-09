@@ -21,6 +21,7 @@ package org.apache.iceberg;
 import static org.apache.iceberg.types.Types.NestedField.required;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Map;
 import org.apache.avro.InvalidAvroMagicException;
@@ -82,9 +83,20 @@ public class TestManifestEncryption {
   private static final List<Long> OFFSETS = ImmutableList.of(4L);
   private static final Integer SORT_ORDER_ID = 2;
 
+  private static final ByteBuffer CONTENT_KEY_METADATA = ByteBuffer.allocate(100);
+
   private static final DataFile DATA_FILE =
       new GenericDataFile(
-          0, PATH, FORMAT, PARTITION, 150972L, METRICS, null, OFFSETS, null, SORT_ORDER_ID);
+          0,
+          PATH,
+          FORMAT,
+          PARTITION,
+          150972L,
+          METRICS,
+          CONTENT_KEY_METADATA,
+          OFFSETS,
+          null,
+          SORT_ORDER_ID);
 
   private static final List<Integer> EQUALITY_IDS = ImmutableList.of(1);
   private static final int[] EQUALITY_ID_ARR = new int[] {1};
@@ -101,9 +113,9 @@ public class TestManifestEncryption {
           EQUALITY_ID_ARR,
           SORT_ORDER_ID,
           null,
-          null);
+          CONTENT_KEY_METADATA);
 
-  private static final EncryptionManager encryptionManager = createEncryptionManager();
+  private static final EncryptionManager ENCRYPTION_MANAGER = createEncryptionManager();
 
   @Rule public TemporaryFolder temp = new TemporaryFolder();
 
@@ -169,7 +181,7 @@ public class TestManifestEncryption {
   private ManifestFile writeManifest(DataFile file, int formatVersion) throws IOException {
     OutputFile manifestFile =
         Files.localOutput(FileFormat.AVRO.addExtension(temp.newFile().toString()));
-    EncryptedOutputFile encryptedManifest = encryptionManager.encrypt(manifestFile);
+    EncryptedOutputFile encryptedManifest = ENCRYPTION_MANAGER.encrypt(manifestFile);
     ManifestWriter<DataFile> writer =
         ManifestFiles.write(
             formatVersion,
@@ -194,7 +206,7 @@ public class TestManifestEncryption {
         .hasCauseInstanceOf(InvalidAvroMagicException.class);
 
     try (CloseableIterable<ManifestEntry<DataFile>> reader =
-        ManifestFiles.read(manifest, FILE_IO, encryptionManager, null).entries()) {
+        ManifestFiles.read(manifest, FILE_IO, ENCRYPTION_MANAGER, null).entries()) {
       List<ManifestEntry<DataFile>> files = Lists.newArrayList(reader);
       Assert.assertEquals("Should contain only one data file", 1, files.size());
       return files.get(0);
@@ -204,7 +216,7 @@ public class TestManifestEncryption {
   private ManifestFile writeDeleteManifest(int formatVersion) throws IOException {
     OutputFile manifestFile =
         Files.localOutput(FileFormat.AVRO.addExtension(temp.newFile().toString()));
-    EncryptedOutputFile encryptedManifest = encryptionManager.encrypt(manifestFile);
+    EncryptedOutputFile encryptedManifest = ENCRYPTION_MANAGER.encrypt(manifestFile);
     ManifestWriter<DeleteFile> writer =
         ManifestFiles.writeDeleteManifest(
             formatVersion,
@@ -222,14 +234,14 @@ public class TestManifestEncryption {
 
   private ManifestEntry<DeleteFile> readDeleteManifest(ManifestFile manifest) throws IOException {
     try (CloseableIterable<ManifestEntry<DeleteFile>> reader =
-        ManifestFiles.readDeleteManifest(manifest, FILE_IO, encryptionManager, null).entries()) {
+        ManifestFiles.readDeleteManifest(manifest, FILE_IO, ENCRYPTION_MANAGER, null).entries()) {
       List<ManifestEntry<DeleteFile>> entries = Lists.newArrayList(reader);
       Assert.assertEquals("Should contain only one data file", 1, entries.size());
       return entries.get(0);
     }
   }
 
-  private static EncryptionManager createEncryptionManager() {
+  static EncryptionManager createEncryptionManager() {
     EncryptionManagerFactory factory = new StandardEncryptionManagerFactory();
     factory.initialize(Maps.newHashMap());
     Map<String, String> tableProperties = Maps.newHashMap();
