@@ -53,7 +53,7 @@ public class MicroBatches {
     return skipManifests(manifestIndexes, startFileIndex);
   }
 
-  // TODO Deprecate / handle in revapi
+  // no use TODO Deprecate / handle in revapi
   public static CloseableIterable<FileScanTask> openManifestFile(
       FileIO io,
       Map<Integer, PartitionSpec> specsById,

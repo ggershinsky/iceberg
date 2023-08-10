@@ -36,7 +36,6 @@ abstract class FileCleanupStrategy {
   private static final Logger LOG = LoggerFactory.getLogger(FileCleanupStrategy.class);
 
   protected final FileIO fileIO;
-
   protected final EncryptionManager encryptionManager;
   protected final ExecutorService planExecutorService;
   private final Consumer<String> deleteFunc;
