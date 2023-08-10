@@ -28,6 +28,7 @@ import org.apache.iceberg.avro.AvroEncoderUtil;
 import org.apache.iceberg.avro.AvroSchemaUtil;
 import org.apache.iceberg.encryption.EncryptedFiles;
 import org.apache.iceberg.encryption.EncryptedInputFile;
+import org.apache.iceberg.encryption.EncryptionKeyMetadata;
 import org.apache.iceberg.encryption.EncryptionManager;
 import org.apache.iceberg.encryption.EncryptionUtil;
 import org.apache.iceberg.encryption.PlaintextEncryptionManager;
@@ -90,11 +91,6 @@ public class ManifestFiles {
     CONTENT_CACHES.cleanUp();
   }
 
-  // TODO deprecate
-  public static CloseableIterable<String> readPaths(ManifestFile manifest, FileIO io) {
-    return readPaths(manifest, io, PlaintextEncryptionManager.instance());
-  }
-
   /**
    * Returns a {@link CloseableIterable} of file paths in the {@link ManifestFile}.
    *
@@ -110,15 +106,9 @@ public class ManifestFiles {
         entry -> entry.file().path().toString());
   }
 
-  /** Tests only. Used only when reading a manifest without filters. */
-  public static ManifestReader<DataFile> read(ManifestFile manifest, FileIO io) {
-    return read(manifest, io, null);
-  }
-
-  /** TODO Flink, Spark actions and benchmarks */
-  public static ManifestReader<DataFile> read(
-      ManifestFile manifest, FileIO io, Map<Integer, PartitionSpec> specsById) {
-    return read(manifest, io, PlaintextEncryptionManager.instance(), specsById);
+  // No use TODO deprecate / handle in revapi
+  public static CloseableIterable<String> readPaths(ManifestFile manifest, FileIO io) {
+    return readPaths(manifest, io, PlaintextEncryptionManager.instance());
   }
 
   /**
@@ -157,13 +147,24 @@ public class ManifestFiles {
         inputFile, manifest.partitionSpecId(), specsById, inheritableMetadata, FileType.DATA_FILES);
   }
 
+  /** Tests only. Used only when reading a manifest without filters. */
+  public static ManifestReader<DataFile> read(ManifestFile manifest, FileIO io) {
+    return read(manifest, io, null);
+  }
+
+  /** TODO Flink, Spark actions and benchmarks */
+  public static ManifestReader<DataFile> read(
+      ManifestFile manifest, FileIO io, Map<Integer, PartitionSpec> specsById) {
+    return read(manifest, io, PlaintextEncryptionManager.instance(), specsById);
+  }
+
   /**
    * Create a new {@link ManifestWriter} for the given format version.
    *
    * @param formatVersion a target format version
    * @param spec a {@link PartitionSpec}
    * @param outputFile an {@link OutputFile} where the manifest will be written
-   * @param keyMetadata an key_metadata ByteBuffer, used for manifest encryption
+   * @param keyMetadata a key_metadata ByteBuffer, used for manifest encryption
    * @param snapshotId a snapshot ID for the manifest entries, or null for an inherited ID
    * @return a manifest writer
    */
@@ -196,7 +197,7 @@ public class ManifestFiles {
   /** TODO Spark actions, benchmarks; Flink; and tests */
   public static ManifestWriter<DataFile> write(
       int formatVersion, PartitionSpec spec, OutputFile outputFile, Long snapshotId) {
-    return write(formatVersion, spec, outputFile, null, snapshotId); // TODO GG null
+    return write(formatVersion, spec, outputFile, EncryptionKeyMetadata.EMPTY.buffer(), snapshotId);
   }
 
   /**
@@ -251,6 +252,7 @@ public class ManifestFiles {
    * @param formatVersion a target format version
    * @param spec a {@link PartitionSpec}
    * @param outputFile an {@link OutputFile} where the manifest will be written
+   * @param keyMetadata a key_metadata ByteBuffer, used for manifest encryption
    * @param snapshotId a snapshot ID for the manifest entries, or null for an inherited ID
    * @return a manifest writer
    */
