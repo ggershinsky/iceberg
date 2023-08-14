@@ -64,7 +64,8 @@ public class AllDeleteFilesTable extends BaseFilesTable {
 
     @Override
     protected CloseableIterable<ManifestFile> manifests() {
-      return reachableManifests(snapshot -> snapshot.deleteManifests(table().io()));
+      return reachableManifests(
+          snapshot -> snapshot.deleteManifests(table().io(), table().encryption()));
     }
   }
 }

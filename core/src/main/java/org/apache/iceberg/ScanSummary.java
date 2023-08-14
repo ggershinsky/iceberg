@@ -158,7 +158,8 @@ public class ScanSummary {
       removeTimeFilters(filters, Expressions.rewriteNot(scan.filter()));
       Expression rowFilter = joinFilters(filters);
 
-      Iterable<ManifestFile> manifests = table.currentSnapshot().dataManifests(ops.io());
+      Iterable<ManifestFile> manifests =
+          table.currentSnapshot().dataManifests(ops.io(), ops.encryption());
 
       boolean filterByTimestamp = !timeFilters.isEmpty();
       Set<Long> snapshotsInTimeRange = Sets.newHashSet();

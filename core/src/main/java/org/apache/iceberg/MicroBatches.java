@@ -39,12 +39,22 @@ import org.slf4j.LoggerFactory;
 public class MicroBatches {
   private MicroBatches() {}
 
+  // no use TODO Deprecate / handle in revapi
   public static List<Pair<ManifestFile, Integer>> skippedManifestIndexesFromSnapshot(
       FileIO io, Snapshot snapshot, long startFileIndex, boolean scanAllFiles) {
+    return null;
+  }
+
+  public static List<Pair<ManifestFile, Integer>> skippedManifestIndexesFromSnapshot(
+      FileIO io,
+      EncryptionManager encryption,
+      Snapshot snapshot,
+      long startFileIndex,
+      boolean scanAllFiles) {
     List<ManifestFile> manifests =
         scanAllFiles
-            ? snapshot.dataManifests(io)
-            : snapshot.dataManifests(io).stream()
+            ? snapshot.dataManifests(io, encryption)
+            : snapshot.dataManifests(io, encryption).stream()
                 .filter(m -> m.snapshotId().equals(snapshot.snapshotId()))
                 .collect(Collectors.toList());
 
@@ -247,7 +257,8 @@ public class MicroBatches {
           targetSizeInBytes > 0, "targetSizeInBytes should be larger than 0");
 
       return generateMicroBatch(
-          skippedManifestIndexesFromSnapshot(io, snapshot, startFileIndex, scanAllFiles),
+          skippedManifestIndexesFromSnapshot(
+              io, encryption, snapshot, startFileIndex, scanAllFiles),
           startFileIndex,
           endFileIndex,
           targetSizeInBytes,

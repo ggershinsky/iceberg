@@ -234,7 +234,7 @@ public class PositionDeletesTable extends BaseMetadataTable {
                       isCaseSensitive()));
 
       // iterate through delete manifests
-      List<ManifestFile> manifests = snapshot().deleteManifests(table().io());
+      List<ManifestFile> manifests = snapshot().deleteManifests(table().io(), table.encryption());
 
       CloseableIterable<ManifestFile> matchingManifests =
           CloseableIterable.filter(

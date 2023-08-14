@@ -69,24 +69,45 @@ public interface Snapshot extends Serializable {
    * Return all {@link ManifestFile} instances for either data or delete manifests in this snapshot.
    *
    * @param io a {@link FileIO} instance used for reading files from storage
+   * @param encryption a {@link EncryptionManager} instance used for decrypting manifest list files
    * @return a list of ManifestFile
    */
+  default List<ManifestFile> allManifests(FileIO io, EncryptionManager encryption) {
+    throw new UnsupportedOperationException(
+        this.getClass().getName() + " doesn't implement allManifests with encryption");
+  }
+
+  /** Used in V1 and tests */
   List<ManifestFile> allManifests(FileIO io);
 
   /**
    * Return a {@link ManifestFile} for each data manifest in this snapshot.
    *
    * @param io a {@link FileIO} instance used for reading files from storage
+   * @param encryption a {@link EncryptionManager} instance used for decrypting manifest list files
    * @return a list of ManifestFile
    */
+  default List<ManifestFile> dataManifests(FileIO io, EncryptionManager encryption) {
+    throw new UnsupportedOperationException(
+        this.getClass().getName() + " doesn't implement dataManifests with encryption");
+  }
+
+  /** Tests only */
   List<ManifestFile> dataManifests(FileIO io);
 
   /**
    * Return a {@link ManifestFile} for each delete manifest in this snapshot.
    *
    * @param io a {@link FileIO} instance used for reading files from storage
+   * @param encryption a {@link EncryptionManager} instance used for decrypting manifest list files
    * @return a list of ManifestFile
    */
+  default List<ManifestFile> deleteManifests(FileIO io, EncryptionManager encryption) {
+    throw new UnsupportedOperationException(
+        this.getClass().getName() + " doesn't implement deleteManifests with encryption");
+  }
+
+  /** Tests only */
   List<ManifestFile> deleteManifests(FileIO io);
 
   /**
@@ -203,5 +224,15 @@ public interface Snapshot extends Serializable {
    */
   default Integer schemaId() {
     return null;
+  }
+
+  /**
+   * Key metadata for encrypted manifest lists.
+   *
+   * @return base64-encoded key metadata for the manifest list file encryption key
+   */
+  default String manifestKeyMetadata() {
+    throw new UnsupportedOperationException(
+        this.getClass().getName() + " doesn't implement manifestKeyMetadata");
   }
 }

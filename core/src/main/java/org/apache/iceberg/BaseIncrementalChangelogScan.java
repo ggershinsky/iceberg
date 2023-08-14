@@ -67,7 +67,8 @@ class BaseIncrementalChangelogScan
 
     Set<ManifestFile> newDataManifests =
         FluentIterable.from(changelogSnapshots)
-            .transformAndConcat(snapshot -> snapshot.dataManifests(table().io()))
+            .transformAndConcat(
+                snapshot -> snapshot.dataManifests(table().io(), table().encryption()))
             .filter(manifest -> changelogSnapshotIds.contains(manifest.snapshotId()))
             .toSet();
 
@@ -105,7 +106,7 @@ class BaseIncrementalChangelogScan
 
     for (Snapshot snapshot : SnapshotUtil.ancestorsBetween(table(), toIdIncl, fromIdExcl)) {
       if (!snapshot.operation().equals(DataOperations.REPLACE)) {
-        if (!snapshot.deleteManifests(table().io()).isEmpty()) {
+        if (!snapshot.deleteManifests(table().io(), table().encryption()).isEmpty()) {
           throw new UnsupportedOperationException(
               "Delete files are currently not supported in changelog scans");
         }

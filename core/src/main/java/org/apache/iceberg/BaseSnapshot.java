@@ -20,14 +20,22 @@ package org.apache.iceberg;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import org.apache.iceberg.encryption.EncryptedFiles;
+import org.apache.iceberg.encryption.EncryptedInputFile;
+import org.apache.iceberg.encryption.EncryptionKeyMetadata;
 import org.apache.iceberg.encryption.EncryptionManager;
+import org.apache.iceberg.encryption.EncryptionUtil;
 import org.apache.iceberg.encryption.PlaintextEncryptionManager;
+import org.apache.iceberg.encryption.StandardEncryptionManager;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.relocated.com.google.common.base.MoreObjects;
 import org.apache.iceberg.relocated.com.google.common.base.Objects;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
@@ -45,6 +53,7 @@ class BaseSnapshot implements Snapshot {
   private final Map<String, String> summary;
   private final Integer schemaId;
   private final String[] v1ManifestLocations;
+  private final String manifestListKeyMetadata;
 
   // lazily initialized
   private transient List<ManifestFile> allManifests = null;
@@ -55,6 +64,7 @@ class BaseSnapshot implements Snapshot {
   private transient List<DeleteFile> addedDeleteFiles = null;
   private transient List<DeleteFile> removedDeleteFiles = null;
 
+  /** Tests only */
   BaseSnapshot(
       long sequenceNumber,
       long snapshotId,
@@ -64,6 +74,28 @@ class BaseSnapshot implements Snapshot {
       Map<String, String> summary,
       Integer schemaId,
       String manifestList) {
+    this(
+        sequenceNumber,
+        snapshotId,
+        parentId,
+        timestampMillis,
+        operation,
+        summary,
+        schemaId,
+        manifestList,
+        null);
+  }
+
+  BaseSnapshot(
+      long sequenceNumber,
+      long snapshotId,
+      Long parentId,
+      long timestampMillis,
+      String operation,
+      Map<String, String> summary,
+      Integer schemaId,
+      String manifestList,
+      String manifestListKeyMetadata) {
     this.sequenceNumber = sequenceNumber;
     this.snapshotId = snapshotId;
     this.parentId = parentId;
@@ -73,6 +105,7 @@ class BaseSnapshot implements Snapshot {
     this.schemaId = schemaId;
     this.manifestListLocation = manifestList;
     this.v1ManifestLocations = null;
+    this.manifestListKeyMetadata = manifestListKeyMetadata;
   }
 
   BaseSnapshot(
@@ -93,6 +126,7 @@ class BaseSnapshot implements Snapshot {
     this.schemaId = schemaId;
     this.manifestListLocation = null;
     this.v1ManifestLocations = v1ManifestLocations;
+    this.manifestListKeyMetadata = null;
   }
 
   @Override
@@ -130,7 +164,12 @@ class BaseSnapshot implements Snapshot {
     return schemaId;
   }
 
-  private void cacheManifests(FileIO fileIO) {
+  @Override
+  public String manifestKeyMetadata() {
+    return manifestListKeyMetadata;
+  }
+
+  private void cacheManifests(FileIO fileIO, EncryptionManager encryption) {
     if (fileIO == null) {
       throw new IllegalArgumentException("Cannot cache changes: FileIO is null");
     }
@@ -145,7 +184,34 @@ class BaseSnapshot implements Snapshot {
 
     if (allManifests == null) {
       // if manifests isn't set, then the snapshotFile is set and should be read to get the list
-      this.allManifests = ManifestLists.read(fileIO.newInputFile(manifestListLocation));
+
+      InputFile manifestListFile = fileIO.newInputFile(manifestListLocation);
+
+      if (manifestListKeyMetadata != null) { // encrypted manifest list file
+        Preconditions.checkArgument(
+            encryption != null, "Encryption manager not provided for encrypted manifest list file");
+        Preconditions.checkArgument(
+            encryption instanceof StandardEncryptionManager,
+            "Encryption manager for encrypted manifest list files can currently only be an instance of "
+                + StandardEncryptionManager.class);
+
+        ByteBuffer keyMetadataBytes =
+            ByteBuffer.wrap(Base64.getDecoder().decode(manifestListKeyMetadata));
+        ByteBuffer unwrappedManfestListKey = null;
+        // Unwrap manifest list key
+        EncryptionKeyMetadata keyMetadata = EncryptionUtil.parseKeyMetadata(keyMetadataBytes);
+        unwrappedManfestListKey =
+            ((StandardEncryptionManager) encryption).unwrapKey(keyMetadata.encryptionKey());
+
+        EncryptionKeyMetadata unwrappedKeyMetadata =
+            EncryptionUtil.createKeyMetadata(unwrappedManfestListKey, keyMetadata.aadPrefix());
+
+        EncryptedInputFile encryptedInputFile =
+            EncryptedFiles.encryptedInput(manifestListFile, unwrappedKeyMetadata);
+        manifestListFile = encryption.decrypt(encryptedInputFile);
+      }
+
+      this.allManifests = ManifestLists.read(manifestListFile);
     }
 
     if (dataManifests == null || deleteManifests == null) {
@@ -162,24 +228,39 @@ class BaseSnapshot implements Snapshot {
 
   @Override
   public List<ManifestFile> allManifests(FileIO fileIO) {
+    return allManifests(fileIO, PlaintextEncryptionManager.instance());
+  }
+
+  @Override
+  public List<ManifestFile> allManifests(FileIO fileIO, EncryptionManager encryption) {
     if (allManifests == null) {
-      cacheManifests(fileIO);
+      cacheManifests(fileIO, encryption);
     }
     return allManifests;
   }
 
   @Override
   public List<ManifestFile> dataManifests(FileIO fileIO) {
+    return dataManifests(fileIO, PlaintextEncryptionManager.instance());
+  }
+
+  @Override
+  public List<ManifestFile> dataManifests(FileIO fileIO, EncryptionManager encryption) {
     if (dataManifests == null) {
-      cacheManifests(fileIO);
+      cacheManifests(fileIO, encryption);
     }
     return dataManifests;
   }
 
   @Override
   public List<ManifestFile> deleteManifests(FileIO fileIO) {
+    return deleteManifests(fileIO, PlaintextEncryptionManager.instance());
+  }
+
+  @Override
+  public List<ManifestFile> deleteManifests(FileIO fileIO, EncryptionManager encryptionManager) {
     if (deleteManifests == null) {
-      cacheManifests(fileIO);
+      cacheManifests(fileIO, encryptionManager);
     }
     return deleteManifests;
   }
@@ -250,7 +331,8 @@ class BaseSnapshot implements Snapshot {
 
     Iterable<ManifestFile> changedManifests =
         Iterables.filter(
-            deleteManifests(fileIO), manifest -> Objects.equal(manifest.snapshotId(), snapshotId));
+            deleteManifests(fileIO, encryptionManager),
+            manifest -> Objects.equal(manifest.snapshotId(), snapshotId));
 
     for (ManifestFile manifest : changedManifests) {
       try (ManifestReader<DeleteFile> reader =
@@ -285,7 +367,8 @@ class BaseSnapshot implements Snapshot {
     // read only manifests that were created by this snapshot
     Iterable<ManifestFile> changedManifests =
         Iterables.filter(
-            dataManifests(fileIO), manifest -> Objects.equal(manifest.snapshotId(), snapshotId));
+            dataManifests(fileIO, encryptionManager),
+            manifest -> Objects.equal(manifest.snapshotId(), snapshotId));
     try (CloseableIterable<ManifestEntry<DataFile>> entries =
         new ManifestGroup(fileIO, encryptionManager, changedManifests).ignoreExisting().entries()) {
       for (ManifestEntry<DataFile> entry : entries) {

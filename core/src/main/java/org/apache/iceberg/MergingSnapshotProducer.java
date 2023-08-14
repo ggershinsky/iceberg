@@ -781,13 +781,14 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
       if (matchingOperations.contains(currentSnapshot.operation())) {
         newSnapshots.add(currentSnapshot.snapshotId());
         if (content == ManifestContent.DATA) {
-          for (ManifestFile manifest : currentSnapshot.dataManifests(ops.io())) {
+          for (ManifestFile manifest : currentSnapshot.dataManifests(ops.io(), ops.encryption())) {
             if (manifest.snapshotId() == currentSnapshot.snapshotId()) {
               manifests.add(manifest);
             }
           }
         } else {
-          for (ManifestFile manifest : currentSnapshot.deleteManifests(ops.io())) {
+          for (ManifestFile manifest : 
+              currentSnapshot.deleteManifests(ops.io(), ops.encryption())) {
             if (manifest.snapshotId() == currentSnapshot.snapshotId()) {
               manifests.add(manifest);
             }
@@ -821,7 +822,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     List<ManifestFile> filtered =
         filterManager.filterManifests(
             SnapshotUtil.schemaFor(base, targetBranch()),
-            snapshot != null ? snapshot.dataManifests(ops.io()) : null);
+            snapshot != null ? snapshot.dataManifests(ops.io(), ops.encryption()) : null);
     long minDataSequenceNumber =
         filtered.stream()
             .map(ManifestFile::minSequenceNumber)
@@ -835,7 +836,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     List<ManifestFile> filteredDeletes =
         deleteFilterManager.filterManifests(
             SnapshotUtil.schemaFor(base, targetBranch()),
-            snapshot != null ? snapshot.deleteManifests(ops.io()) : null);
+            snapshot != null ? snapshot.deleteManifests(ops.io(), ops.encryption()) : null);
 
     // only keep manifests that have live data files or that were written by this commit
     Predicate<ManifestFile> shouldKeep =

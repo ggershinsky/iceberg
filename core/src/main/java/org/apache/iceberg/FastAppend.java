@@ -162,7 +162,7 @@ class FastAppend extends SnapshotProducer<AppendFiles> implements AppendFiles {
     Iterables.addAll(manifests, appendManifestsWithMetadata);
 
     if (snapshot != null) {
-      manifests.addAll(snapshot.allManifests(ops.io()));
+      manifests.addAll(snapshot.allManifests(ops.io(), ops.encryption));
     }
 
     return manifests;

@@ -351,7 +351,7 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsAdmissio
       // generate manifest index for the curSnapshot
       List<Pair<ManifestFile, Integer>> indexedManifests =
           MicroBatches.skippedManifestIndexesFromSnapshot(
-              table.io(), curSnapshot, startPosOfSnapOffset, scanAllFiles);
+              table.io(), table.encryption(), curSnapshot, startPosOfSnapOffset, scanAllFiles);
       // this is under assumption we will be able to add at-least 1 file in the new offset
       for (int idx = 0; idx < indexedManifests.size() && shouldContinueReading; idx++) {
         // be rest assured curPos >= startFileIndex
