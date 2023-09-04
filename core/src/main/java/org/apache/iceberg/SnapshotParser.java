@@ -152,8 +152,12 @@ public class SnapshotParser {
     if (node.has(MANIFEST_LIST)) {
       // the manifest list is stored in a manifest list file
       String manifestList = JsonUtil.getString(MANIFEST_LIST, node);
+
       // Manifest list can be encrypted
-      String manifestListKeyMetadata = JsonUtil.getString(MANIFEST_LIST_KEY_METADATA, node);
+      String manifestListKeyMetadata = null;
+      if (node.has(MANIFEST_LIST_KEY_METADATA)) {
+        manifestListKeyMetadata = JsonUtil.getString(MANIFEST_LIST_KEY_METADATA, node);
+      }
 
       return new BaseSnapshot(
           sequenceNumber,
