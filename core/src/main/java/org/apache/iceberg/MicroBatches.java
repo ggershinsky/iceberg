@@ -53,7 +53,6 @@ public class MicroBatches {
     return skipManifests(manifestIndexes, startFileIndex);
   }
 
-  // no use TODO Deprecate / handle in revapi
   public static CloseableIterable<FileScanTask> openManifestFile(
       FileIO io,
       Map<Integer, PartitionSpec> specsById,
@@ -61,7 +60,14 @@ public class MicroBatches {
       Snapshot snapshot,
       ManifestFile manifestFile,
       boolean scanAllFiles) {
-    return null;
+    return openManifestFile(
+        io,
+        PlaintextEncryptionManager.instance(),
+        specsById,
+        caseSensitive,
+        snapshot,
+        manifestFile,
+        scanAllFiles);
   }
 
   public static CloseableIterable<FileScanTask> openManifestFile(
