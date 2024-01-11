@@ -122,8 +122,7 @@ public class DeleteFileIndexBenchmark {
     Snapshot snapshot = table.currentSnapshot();
 
     ManifestGroup manifestGroup =
-        new ManifestGroup(
-            table.io(), table.encryption(), snapshot.dataManifests(table.io()), ImmutableList.of());
+        new ManifestGroup(table.io(), snapshot.dataManifests(table.io()), ImmutableList.of());
 
     try (CloseableIterable<ManifestEntry<DataFile>> entries = manifestGroup.entries()) {
       List<DataFile> files = Lists.newArrayList();
@@ -141,7 +140,7 @@ public class DeleteFileIndexBenchmark {
 
     List<ManifestFile> deleteManifests = table.currentSnapshot().deleteManifests(table.io());
 
-    return DeleteFileIndex.builderFor(table.io(), table.encryption(), deleteManifests)
+    return DeleteFileIndex.builderFor(table.io(), deleteManifests)
         .specsById(table.specs())
         .planWith(ThreadPools.getWorkerPool())
         .build();

@@ -28,6 +28,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.function.BiFunction;
 import java.util.function.Predicate;
 import org.apache.iceberg.encryption.EncryptionManager;
+import org.apache.iceberg.encryption.PlaintextEncryptionManager;
 import org.apache.iceberg.expressions.Evaluator;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.Expressions;
@@ -67,6 +68,10 @@ class ManifestGroup {
   private Set<Integer> columnsToKeepStats;
   private ExecutorService executorService;
   private ScanMetrics scanMetrics;
+
+  ManifestGroup(FileIO io, Iterable<ManifestFile> manifests) {
+    this(io, PlaintextEncryptionManager.instance(), manifests);
+  }
 
   ManifestGroup(FileIO io, EncryptionManager encryption, Iterable<ManifestFile> manifests) {
     this(

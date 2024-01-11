@@ -33,6 +33,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import org.apache.iceberg.encryption.EncryptionManager;
+import org.apache.iceberg.encryption.PlaintextEncryptionManager;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.Expressions;
@@ -309,6 +310,10 @@ class DeleteFileIndex {
     }
 
     return nullValueCount > 0;
+  }
+
+  static Builder builderFor(FileIO io, Iterable<ManifestFile> deleteManifests) {
+    return new Builder(io, PlaintextEncryptionManager.instance(), Sets.newHashSet(deleteManifests));
   }
 
   static Builder builderFor(
