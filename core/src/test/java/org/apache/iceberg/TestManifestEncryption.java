@@ -23,14 +23,10 @@ import static org.apache.iceberg.types.Types.NestedField.required;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
-import java.util.Map;
 import org.apache.avro.InvalidAvroMagicException;
 import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.encryption.EncryptionManager;
-import org.apache.iceberg.encryption.EncryptionManagerFactory;
-import org.apache.iceberg.encryption.EncryptionProperties;
-import org.apache.iceberg.encryption.StandardEncryptionManagerFactory;
-import org.apache.iceberg.encryption.UnitestKMS;
+import org.apache.iceberg.encryption.EncryptionTestHelpers;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.FileIO;
@@ -38,7 +34,6 @@ import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
-import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Types;
 import org.assertj.core.api.Assertions;
@@ -95,7 +90,6 @@ public class TestManifestEncryption {
           METRICS,
           CONTENT_KEY_METADATA,
           OFFSETS,
-          null,
           SORT_ORDER_ID);
 
   private static final List<Integer> EQUALITY_IDS = ImmutableList.of(1);
@@ -115,7 +109,8 @@ public class TestManifestEncryption {
           null,
           CONTENT_KEY_METADATA);
 
-  private static final EncryptionManager ENCRYPTION_MANAGER = createEncryptionManager();
+  private static final EncryptionManager ENCRYPTION_MANAGER =
+      EncryptionTestHelpers.createEncryptionManager();
 
   @Rule public TemporaryFolder temp = new TemporaryFolder();
 
@@ -239,18 +234,5 @@ public class TestManifestEncryption {
       Assert.assertEquals("Should contain only one data file", 1, entries.size());
       return entries.get(0);
     }
-  }
-
-  static EncryptionManager createEncryptionManager() {
-    EncryptionManagerFactory factory = new StandardEncryptionManagerFactory();
-    factory.initialize(Maps.newHashMap());
-    Map<String, String> tableProperties = Maps.newHashMap();
-    tableProperties.put(EncryptionProperties.ENCRYPTION_TABLE_KEY, UnitestKMS.MASTER_KEY_NAME1);
-    tableProperties.put(
-        EncryptionProperties.ENCRYPTION_KMS_CLIENT_IMPL, UnitestKMS.class.getCanonicalName());
-    tableProperties.put(TableProperties.FORMAT_VERSION, "2");
-    TableMetadata metadata = TableMetadata.newTableMetadata(SCHEMA, SPEC, PATH, tableProperties);
-
-    return factory.create(metadata);
   }
 }

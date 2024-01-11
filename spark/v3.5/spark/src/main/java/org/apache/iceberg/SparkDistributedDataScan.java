@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import org.apache.iceberg.encryption.EncryptionManager;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.ClosingIterator;
@@ -235,9 +236,10 @@ public class SparkDistributedDataScan extends BaseDistributedDataScan {
     @Override
     public Iterator<DataFile> call(ManifestFileBean manifest) throws Exception {
       FileIO io = table.value().io();
+      EncryptionManager encryption = table.value().encryption();
       Map<Integer, PartitionSpec> specs = table.value().specs();
       return new ClosingIterator<>(
-          ManifestFiles.read(manifest, io, specs)
+          ManifestFiles.read(manifest, io, encryption, specs)
               .select(withStats ? SCAN_WITH_STATS_COLUMNS : SCAN_COLUMNS)
               .filterRows(filter)
               .caseSensitive(isCaseSensitive)

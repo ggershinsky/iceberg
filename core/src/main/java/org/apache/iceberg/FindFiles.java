@@ -202,7 +202,7 @@ public class FindFiles {
 
       // when snapshot is not null
       CloseableIterable<ManifestEntry<DataFile>> entries =
-          new ManifestGroup(ops.io(), snapshot.dataManifests(ops.io()))
+          new ManifestGroup(ops.io(), ops.encryption(), snapshot.dataManifests(ops.io()))
               .specsById(ops.current().specsById())
               .filterData(rowFilter)
               .filterFiles(fileFilter)

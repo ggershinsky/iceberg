@@ -23,6 +23,7 @@ import com.github.benmanes.caffeine.cache.LoadingCache;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import org.apache.iceberg.encryption.EncryptionManager;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.expressions.ManifestEvaluator;
@@ -99,6 +100,7 @@ abstract class BaseEntriesTable extends BaseMetadataTable {
     private final Schema fileProjection;
     private final Schema dataTableSchema;
     private final FileIO io;
+    private final EncryptionManager encryption;
     private final ManifestFile manifest;
     private final Map<Integer, PartitionSpec> specsById;
 
@@ -112,6 +114,7 @@ abstract class BaseEntriesTable extends BaseMetadataTable {
       super(DataFiles.fromManifest(manifest), null, schemaString, specString, residuals);
       this.projection = projection;
       this.io = table.io();
+      this.encryption = table.encryption();
       this.manifest = manifest;
       this.specsById = Maps.newHashMap(table.specs());
       this.dataTableSchema = table.schema();
@@ -178,7 +181,9 @@ abstract class BaseEntriesTable extends BaseMetadataTable {
      */
     private CloseableIterable<? extends ManifestEntry<? extends ContentFile<?>>> entries(
         Schema fileStructProjection) {
-      return ManifestFiles.open(manifest, io, specsById).project(fileStructProjection).entries();
+      return ManifestFiles.open(manifest, io, encryption, specsById)
+          .project(fileStructProjection)
+          .entries();
     }
 
     /**

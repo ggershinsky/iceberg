@@ -500,7 +500,7 @@ abstract class SnapshotProducer<ThisT> implements SnapshotUpdate<ThisT> {
                         "snap-%d-%d-%s", snapshotId(), attempt.incrementAndGet(), commitUUID))));
   }
 
-  // TODO deprecate / handle in revapi
+  // TODO Handle in revapi
   protected OutputFile newManifestOutput() {
     return null;
   }

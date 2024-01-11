@@ -293,7 +293,8 @@ abstract class BaseDistributedDataScan
   }
 
   private DeleteFileIndex planDeletesLocally(List<ManifestFile> deleteManifests) {
-    DeleteFileIndex.Builder builder = DeleteFileIndex.builderFor(io(), deleteManifests);
+    DeleteFileIndex.Builder builder =
+        DeleteFileIndex.builderFor(io(), table().encryption(), deleteManifests);
 
     if (shouldPlanWithExecutor() && deleteManifests.size() > 1) {
       builder.planWith(planExecutor());

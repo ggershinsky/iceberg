@@ -83,7 +83,7 @@ public class CatalogUtil {
    * has been dropped in the metastore.
    *
    * @param io a FileIO to use for deletes
-   * @param encryption an EncryptionManager to use for delets
+   * @param encryption an EncryptionManager to use for deletes
    * @param metadata the last valid TableMetadata instance for a dropped table.
    */
   public static void dropTableData(
