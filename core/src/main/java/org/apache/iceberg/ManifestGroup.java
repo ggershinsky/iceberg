@@ -69,16 +69,17 @@ class ManifestGroup {
   private ExecutorService executorService;
   private ScanMetrics scanMetrics;
 
-  ManifestGroup(FileIO io, Iterable<ManifestFile> manifests) {
-    this(io, PlaintextEncryptionManager.instance(), manifests);
-  }
-
   ManifestGroup(FileIO io, EncryptionManager encryption, Iterable<ManifestFile> manifests) {
     this(
         io,
         encryption,
         Iterables.filter(manifests, manifest -> manifest.content() == ManifestContent.DATA),
         Iterables.filter(manifests, manifest -> manifest.content() == ManifestContent.DELETES));
+  }
+
+  ManifestGroup(
+      FileIO io, Iterable<ManifestFile> dataManifests, Iterable<ManifestFile> deleteManifests) {
+    this(io, PlaintextEncryptionManager.instance(), dataManifests, deleteManifests);
   }
 
   ManifestGroup(
