@@ -238,7 +238,7 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsAdmissio
       }
 
       MicroBatch latestMicroBatch =
-          MicroBatches.from(currentSnapshot, table.io(), table.encryption())
+          MicroBatches.from(currentSnapshot, table.io())
               .caseSensitive(caseSensitive)
               .specsById(table.specs())
               .generate(
@@ -359,7 +359,6 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsAdmissio
         try (CloseableIterable<FileScanTask> taskIterable =
                 MicroBatches.openManifestFile(
                     table.io(),
-                    table.encryption(),
                     table.specs(),
                     caseSensitive,
                     curSnapshot,
@@ -413,7 +412,7 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsAdmissio
     // If snapshotSummary doesn't have SnapshotSummary.ADDED_FILES_PROP,
     // iterate through addedFiles iterator to find addedFilesCount.
     return addedFilesCount == -1
-        ? Iterables.size(snapshot.addedDataFiles(table.io(), table.encryption()))
+        ? Iterables.size(snapshot.addedDataFiles(table.io()))
         : addedFilesCount;
   }
 
