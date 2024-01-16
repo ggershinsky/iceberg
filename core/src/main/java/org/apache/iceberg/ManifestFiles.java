@@ -147,12 +147,12 @@ public class ManifestFiles {
         inputFile, manifest.partitionSpecId(), specsById, inheritableMetadata, FileType.DATA_FILES);
   }
 
-  /** Tests. Used only when reading a manifest without filters. */
+  /** Tests only. Used only when reading a manifest without filters. */
   public static ManifestReader<DataFile> read(ManifestFile manifest, FileIO io) {
     return read(manifest, io, null);
   }
 
-  /** TODO encryption in Flink, Spark actions and benchmarks */
+  /** TODO Flink, Spark actions and benchmarks */
   public static ManifestReader<DataFile> read(
       ManifestFile manifest, FileIO io, Map<Integer, PartitionSpec> specsById) {
     return read(manifest, io, PlaintextEncryptionManager.instance(), specsById);

@@ -64,7 +64,8 @@ public class AllFilesTable extends BaseFilesTable {
 
     @Override
     protected CloseableIterable<ManifestFile> manifests() {
-      return reachableManifests(snapshot -> snapshot.allManifests(table().io()));
+      return reachableManifests(
+          snapshot -> snapshot.allManifests(table().io(), table().encryption()));
     }
   }
 }

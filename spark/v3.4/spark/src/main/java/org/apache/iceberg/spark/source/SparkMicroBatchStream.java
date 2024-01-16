@@ -238,7 +238,7 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsAdmissio
       }
 
       MicroBatch latestMicroBatch =
-          MicroBatches.from(currentSnapshot, table.io())
+          MicroBatches.from(currentSnapshot, table.io(), table.encryption())
               .caseSensitive(caseSensitive)
               .specsById(table.specs())
               .generate(
@@ -351,7 +351,7 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsAdmissio
       // generate manifest index for the curSnapshot
       List<Pair<ManifestFile, Integer>> indexedManifests =
           MicroBatches.skippedManifestIndexesFromSnapshot(
-              table.io(), curSnapshot, startPosOfSnapOffset, scanAllFiles);
+              table.io(), table.encryption(), curSnapshot, startPosOfSnapOffset, scanAllFiles);
       // this is under assumption we will be able to add at-least 1 file in the new offset
       for (int idx = 0; idx < indexedManifests.size() && shouldContinueReading; idx++) {
         // be rest assured curPos >= startFileIndex
@@ -359,6 +359,7 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsAdmissio
         try (CloseableIterable<FileScanTask> taskIterable =
                 MicroBatches.openManifestFile(
                     table.io(),
+                    table.encryption(),
                     table.specs(),
                     caseSensitive,
                     curSnapshot,
@@ -412,7 +413,7 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsAdmissio
     // If snapshotSummary doesn't have SnapshotSummary.ADDED_FILES_PROP,
     // iterate through addedFiles iterator to find addedFilesCount.
     return addedFilesCount == -1
-        ? Iterables.size(snapshot.addedDataFiles(table.io()))
+        ? Iterables.size(snapshot.addedDataFiles(table.io(), table.encryption()))
         : addedFilesCount;
   }
 

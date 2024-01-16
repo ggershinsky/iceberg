@@ -205,7 +205,7 @@ abstract class BaseDistributedDataScan
   }
 
   private List<ManifestFile> findMatchingDeleteManifests(Snapshot snapshot) {
-    List<ManifestFile> deleteManifests = snapshot.deleteManifests(io());
+    List<ManifestFile> deleteManifests = snapshot.deleteManifests(io(), table().encryption());
     scanMetrics().totalDeleteManifests().increment(deleteManifests.size());
 
     List<ManifestFile> matchingDeleteManifests = filterManifests(deleteManifests);

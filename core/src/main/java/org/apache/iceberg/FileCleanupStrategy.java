@@ -66,7 +66,7 @@ abstract class FileCleanupStrategy {
               "deleted_data_files_count");
 
   protected CloseableIterable<ManifestFile> readManifests(Snapshot snapshot) {
-    if (snapshot.manifestListLocation() != null) {
+    if (snapshot.manifestListLocation() != null) { // TODO GG encryption
       return Avro.read(fileIO.newInputFile(snapshot.manifestListLocation()))
           .rename("manifest_file", GenericManifestFile.class.getName())
           .classLoader(GenericManifestFile.class.getClassLoader())
@@ -74,7 +74,7 @@ abstract class FileCleanupStrategy {
           .reuseContainers(true)
           .build();
     } else {
-      return CloseableIterable.withNoopClose(snapshot.allManifests(fileIO));
+      return CloseableIterable.withNoopClose(snapshot.allManifests(fileIO, encryptionManager));
     }
   }
 

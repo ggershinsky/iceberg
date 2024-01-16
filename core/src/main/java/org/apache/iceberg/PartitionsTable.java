@@ -187,7 +187,8 @@ public class PartitionsTable extends BaseMetadataTable {
     Table table = scan.table();
 
     CloseableIterable<ManifestFile> filteredManifests =
-        filteredManifests(scan, table, scan.snapshot().allManifests(table.io()));
+        filteredManifests(
+            scan, table, scan.snapshot().allManifests(table.io(), table.encryption()));
 
     Iterable<CloseableIterable<ManifestEntry<?>>> tasks =
         CloseableIterable.transform(filteredManifests, manifest -> readEntries(manifest, scan));

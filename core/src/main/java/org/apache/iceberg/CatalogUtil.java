@@ -95,7 +95,7 @@ public class CatalogUtil {
     Set<ManifestFile> manifestsToDelete = Sets.newHashSet();
     for (Snapshot snapshot : metadata.snapshots()) {
       // add all manifests to the delete set because both data and delete files should be removed
-      Iterables.addAll(manifestsToDelete, snapshot.allManifests(io));
+      Iterables.addAll(manifestsToDelete, snapshot.allManifests(io, encryption));
       // add the manifest list to the delete set, if present
       if (snapshot.manifestListLocation() != null) {
         manifestListsToDelete.add(snapshot.manifestListLocation());
@@ -114,6 +114,7 @@ public class CatalogUtil {
       deleteFiles(io, encryption, manifestsToDelete);
     }
 
+    // TODO GG encryption?
     deleteFiles(io, Iterables.transform(manifestsToDelete, ManifestFile::path), "manifest", true);
     deleteFiles(io, manifestListsToDelete, "manifest list", true);
     deleteFiles(
@@ -134,7 +135,7 @@ public class CatalogUtil {
     deleteFile(io, metadata.metadataFileLocation(), "metadata");
   }
 
-  /** Temp - for catalogs other than Hive and Hadoop; and for tests */
+  /** TODO GG Temp - for catalogs other than Hive and Hadoop; and for tests */
   public static void dropTableData(FileIO io, TableMetadata metadata) {
     dropTableData(io, PlaintextEncryptionManager.instance(), metadata);
   }

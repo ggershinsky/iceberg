@@ -26,6 +26,9 @@ import org.apache.iceberg.encryption.EncryptedFiles;
 import org.apache.iceberg.encryption.EncryptedInputFile;
 import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.events.CreateSnapshotEvent;
+import org.apache.iceberg.encryption.EncryptedFiles;
+import org.apache.iceberg.encryption.EncryptedInputFile;
+import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.InputFile;
@@ -159,7 +162,7 @@ class FastAppend extends SnapshotProducer<AppendFiles> implements AppendFiles {
     Iterables.addAll(manifests, appendManifestsWithMetadata);
 
     if (snapshot != null) {
-      manifests.addAll(snapshot.allManifests(ops.io()));
+      manifests.addAll(snapshot.allManifests(ops.io(), ops.encryption));
     }
 
     return manifests;

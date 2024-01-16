@@ -58,7 +58,8 @@ public class DeleteFilesTable extends BaseFilesTable {
 
     @Override
     protected CloseableIterable<ManifestFile> manifests() {
-      return CloseableIterable.withNoopClose(snapshot().deleteManifests(table().io()));
+      return CloseableIterable.withNoopClose(
+          snapshot().deleteManifests(table().io(), table().encryption()));
     }
   }
 }
