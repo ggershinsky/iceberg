@@ -29,6 +29,8 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
+import org.apache.iceberg.BaseMetadataTable;
+import org.apache.iceberg.HasTableOperations;
 import org.apache.iceberg.NullOrder;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.PartitionSpec;
@@ -44,6 +46,8 @@ import org.apache.iceberg.expressions.BoundPredicate;
 import org.apache.iceberg.expressions.ExpressionVisitors;
 import org.apache.iceberg.expressions.Term;
 import org.apache.iceberg.expressions.UnboundPredicate;
+import org.apache.iceberg.expressions.UnboundTerm;
+import org.apache.iceberg.expressions.UnboundTransform;
 import org.apache.iceberg.expressions.Zorder;
 import org.apache.iceberg.relocated.com.google.common.base.Joiner;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
@@ -366,14 +370,18 @@ public class Spark3Util {
           return org.apache.iceberg.expressions.Expressions.ref(colName);
         case "bucket":
           return org.apache.iceberg.expressions.Expressions.bucket(colName, findWidth(transform));
+        case "year":
         case "years":
           return org.apache.iceberg.expressions.Expressions.year(colName);
+        case "month":
         case "months":
           return org.apache.iceberg.expressions.Expressions.month(colName);
         case "date":
+        case "day":
         case "days":
           return org.apache.iceberg.expressions.Expressions.day(colName);
         case "date_hour":
+        case "hour":
         case "hours":
           return org.apache.iceberg.expressions.Expressions.hour(colName);
         case "truncate":
@@ -423,17 +431,21 @@ public class Spark3Util {
         case "bucket":
           builder.bucket(colName, findWidth(transform));
           break;
+        case "year":
         case "years":
           builder.year(colName);
           break;
+        case "month":
         case "months":
           builder.month(colName);
           break;
         case "date":
+        case "day":
         case "days":
           builder.day(colName);
           break;
         case "date_hour":
+        case "hour":
         case "hours":
           builder.hour(colName);
           break;
@@ -626,35 +638,46 @@ public class Spark3Util {
     public <T> String predicate(UnboundPredicate<T> pred) {
       switch (pred.op()) {
         case IS_NULL:
-          return pred.ref().name() + " IS NULL";
+          return sqlString(pred.term()) + " IS NULL";
         case NOT_NULL:
-          return pred.ref().name() + " IS NOT NULL";
+          return sqlString(pred.term()) + " IS NOT NULL";
         case IS_NAN:
-          return "is_nan(" + pred.ref().name() + ")";
+          return "is_nan(" + sqlString(pred.term()) + ")";
         case NOT_NAN:
-          return "not_nan(" + pred.ref().name() + ")";
+          return "not_nan(" + sqlString(pred.term()) + ")";
         case LT:
-          return pred.ref().name() + " < " + sqlString(pred.literal());
+          return sqlString(pred.term()) + " < " + sqlString(pred.literal());
         case LT_EQ:
-          return pred.ref().name() + " <= " + sqlString(pred.literal());
+          return sqlString(pred.term()) + " <= " + sqlString(pred.literal());
         case GT:
-          return pred.ref().name() + " > " + sqlString(pred.literal());
+          return sqlString(pred.term()) + " > " + sqlString(pred.literal());
         case GT_EQ:
-          return pred.ref().name() + " >= " + sqlString(pred.literal());
+          return sqlString(pred.term()) + " >= " + sqlString(pred.literal());
         case EQ:
-          return pred.ref().name() + " = " + sqlString(pred.literal());
+          return sqlString(pred.term()) + " = " + sqlString(pred.literal());
         case NOT_EQ:
-          return pred.ref().name() + " != " + sqlString(pred.literal());
+          return sqlString(pred.term()) + " != " + sqlString(pred.literal());
         case STARTS_WITH:
-          return pred.ref().name() + " LIKE '" + pred.literal().value() + "%'";
+          return sqlString(pred.term()) + " LIKE '" + pred.literal().value() + "%'";
         case NOT_STARTS_WITH:
-          return pred.ref().name() + " NOT LIKE '" + pred.literal().value() + "%'";
+          return sqlString(pred.term()) + " NOT LIKE '" + pred.literal().value() + "%'";
         case IN:
-          return pred.ref().name() + " IN (" + sqlString(pred.literals()) + ")";
+          return sqlString(pred.term()) + " IN (" + sqlString(pred.literals()) + ")";
         case NOT_IN:
-          return pred.ref().name() + " NOT IN (" + sqlString(pred.literals()) + ")";
+          return sqlString(pred.term()) + " NOT IN (" + sqlString(pred.literals()) + ")";
         default:
           throw new UnsupportedOperationException("Cannot convert predicate to SQL: " + pred);
+      }
+    }
+
+    private static <T> String sqlString(UnboundTerm<T> term) {
+      if (term instanceof org.apache.iceberg.expressions.NamedReference) {
+        return term.ref().name();
+      } else if (term instanceof UnboundTransform) {
+        UnboundTransform<?, ?> transform = (UnboundTransform<?, ?>) term;
+        return transform.transform().toString() + "(" + transform.ref().name() + ")";
+      } else {
+        throw new UnsupportedOperationException("Cannot convert term to SQL: " + term);
       }
     }
 
@@ -865,7 +888,7 @@ public class Spark3Util {
             JavaConverters.collectionAsScalaIterableConverter(ImmutableList.of(rootPath))
                 .asScala()
                 .toSeq(),
-            scala.collection.immutable.Map$.MODULE$.<String, String>empty(),
+            scala.collection.immutable.Map$.MODULE$.empty(),
             userSpecifiedSchema,
             fileStatusCache,
             Option.empty(),
@@ -925,6 +948,17 @@ public class Spark3Util {
     String table = identifier.name();
     Option<String> database = namespace.length == 1 ? Option.apply(namespace[0]) : Option.empty();
     return org.apache.spark.sql.catalyst.TableIdentifier.apply(table, database);
+  }
+
+  static String baseTableUUID(org.apache.iceberg.Table table) {
+    if (table instanceof HasTableOperations) {
+      TableOperations ops = ((HasTableOperations) table).operations();
+      return ops.current().uuid();
+    } else if (table instanceof BaseMetadataTable) {
+      return ((BaseMetadataTable) table).table().operations().current().uuid();
+    } else {
+      throw new UnsupportedOperationException("Cannot retrieve UUID for table " + table.name());
+    }
   }
 
   private static class DescribeSortOrderVisitor implements SortOrderVisitor<String> {

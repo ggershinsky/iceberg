@@ -19,12 +19,12 @@
 package org.apache.iceberg.spark.extensions;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.IntStream;
-import org.apache.iceberg.AssertHelpers;
 import org.apache.iceberg.SnapshotSummary;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -215,6 +215,41 @@ public class TestRewriteDataFilesProcedure extends SparkExtensionsTestBase {
             row(1, "foo", null),
             row(1, "foo", null));
     assertEquals("Should have expected rows", expectedRows, sql("SELECT * FROM %s", tableName));
+  }
+
+  @Test
+  public void testRewriteDataFilesWithZOrderNullBinaryColumn() {
+    sql("CREATE TABLE %s (c1 int, c2 string, c3 binary) USING iceberg", tableName);
+
+    for (int i = 0; i < 5; i++) {
+      sql("INSERT INTO %s values (1, 'foo', null), (2, 'bar', null)", tableName);
+    }
+
+    List<Object[]> output =
+        sql(
+            "CALL %s.system.rewrite_data_files(table => '%s', "
+                + "strategy => 'sort', sort_order => 'zorder(c2,c3)')",
+            catalogName, tableIdent);
+
+    assertEquals(
+        "Action should rewrite 10 data files and add 1 data files",
+        row(10, 1),
+        Arrays.copyOf(output.get(0), 2));
+    assertThat(output.get(0)).hasSize(3);
+    assertThat(snapshotSummary())
+        .containsEntry(SnapshotSummary.REMOVED_FILE_SIZE_PROP, String.valueOf(output.get(0)[2]));
+    assertThat(sql("SELECT * FROM %s", tableName))
+        .containsExactly(
+            row(2, "bar", null),
+            row(2, "bar", null),
+            row(2, "bar", null),
+            row(2, "bar", null),
+            row(2, "bar", null),
+            row(1, "foo", null),
+            row(1, "foo", null),
+            row(1, "foo", null),
+            row(1, "foo", null),
+            row(1, "foo", null));
   }
 
   @Test
@@ -419,136 +454,136 @@ public class TestRewriteDataFilesProcedure extends SparkExtensionsTestBase {
     insertData(2);
 
     // Test for invalid strategy
-    AssertHelpers.assertThrows(
-        "Should reject calls with unsupported strategy error message",
-        IllegalArgumentException.class,
-        "unsupported strategy: temp. Only binpack or sort is supported",
-        () ->
-            sql(
-                "CALL %s.system.rewrite_data_files(table => '%s', options => map('min-input-files','2'), "
-                    + "strategy => 'temp')",
-                catalogName, tableIdent));
+    assertThatThrownBy(
+            () ->
+                sql(
+                    "CALL %s.system.rewrite_data_files(table => '%s', options => map('min-input-files','2'), "
+                        + "strategy => 'temp')",
+                    catalogName, tableIdent))
+        .as("Should reject calls with unsupported strategy error message")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("unsupported strategy: temp. Only binpack or sort is supported");
 
     // Test for sort_order with binpack strategy
-    AssertHelpers.assertThrows(
-        "Should reject calls with error message",
-        IllegalArgumentException.class,
-        "Must use only one rewriter type (bin-pack, sort, zorder)",
-        () ->
-            sql(
-                "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'binpack', "
-                    + "sort_order => 'c1 ASC NULLS FIRST')",
-                catalogName, tableIdent));
+    assertThatThrownBy(
+            () ->
+                sql(
+                    "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'binpack', "
+                        + "sort_order => 'c1 ASC NULLS FIRST')",
+                    catalogName, tableIdent))
+        .as("Should reject calls with error message")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Must use only one rewriter type (bin-pack, sort, zorder)");
 
     // Test for sort strategy without any (default/user defined) sort_order
-    AssertHelpers.assertThrows(
-        "Should reject calls with error message",
-        IllegalArgumentException.class,
-        "Cannot sort data without a valid sort order",
-        () ->
-            sql(
-                "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'sort')",
-                catalogName, tableIdent));
+    assertThatThrownBy(
+            () ->
+                sql(
+                    "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'sort')",
+                    catalogName, tableIdent))
+        .as("Should reject calls with error message")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Cannot sort data without a valid sort order");
 
     // Test for sort_order with invalid null order
-    AssertHelpers.assertThrows(
-        "Should reject calls with error message",
-        IllegalArgumentException.class,
-        "Unable to parse sortOrder:",
-        () ->
-            sql(
-                "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'sort', "
-                    + "sort_order => 'c1 ASC none')",
-                catalogName, tableIdent));
+    assertThatThrownBy(
+            () ->
+                sql(
+                    "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'sort', "
+                        + "sort_order => 'c1 ASC none')",
+                    catalogName, tableIdent))
+        .as("Should reject calls with error message")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unable to parse sortOrder:");
 
     // Test for sort_order with invalid sort direction
-    AssertHelpers.assertThrows(
-        "Should reject calls with error message",
-        IllegalArgumentException.class,
-        "Unable to parse sortOrder:",
-        () ->
-            sql(
-                "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'sort', "
-                    + "sort_order => 'c1 none NULLS FIRST')",
-                catalogName, tableIdent));
+    assertThatThrownBy(
+            () ->
+                sql(
+                    "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'sort', "
+                        + "sort_order => 'c1 none NULLS FIRST')",
+                    catalogName, tableIdent))
+        .as("Should reject calls with error message")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Unable to parse sortOrder:");
 
     // Test for sort_order with invalid column name
-    AssertHelpers.assertThrows(
-        "Should reject calls with error message",
-        ValidationException.class,
-        "Cannot find field 'col1' in struct:"
-            + " struct<1: c1: optional int, 2: c2: optional string, 3: c3: optional string>",
-        () ->
-            sql(
-                "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'sort', "
-                    + "sort_order => 'col1 DESC NULLS FIRST')",
-                catalogName, tableIdent));
+    assertThatThrownBy(
+            () ->
+                sql(
+                    "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'sort', "
+                        + "sort_order => 'col1 DESC NULLS FIRST')",
+                    catalogName, tableIdent))
+        .as("Should reject calls with error message")
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining(
+            "Cannot find field 'col1' in struct:"
+                + " struct<1: c1: optional int, 2: c2: optional string, 3: c3: optional string>");
 
     // Test with invalid filter column col1
-    AssertHelpers.assertThrows(
-        "Should reject calls with error message",
-        IllegalArgumentException.class,
-        "Cannot parse predicates in where option: col1 = 3",
-        () ->
-            sql(
-                "CALL %s.system.rewrite_data_files(table => '%s', " + "where => 'col1 = 3')",
-                catalogName, tableIdent));
+    assertThatThrownBy(
+            () ->
+                sql(
+                    "CALL %s.system.rewrite_data_files(table => '%s', " + "where => 'col1 = 3')",
+                    catalogName, tableIdent))
+        .as("Should reject calls with error message")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Cannot parse predicates in where option: col1 = 3");
 
     // Test for z_order with invalid column name
-    AssertHelpers.assertThrows(
-        "Should reject calls with error message",
-        IllegalArgumentException.class,
-        "Cannot find column 'col1' in table schema (case sensitive = false): "
-            + "struct<1: c1: optional int, 2: c2: optional string, 3: c3: optional string>",
-        () ->
-            sql(
-                "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'sort', "
-                    + "sort_order => 'zorder(col1)')",
-                catalogName, tableIdent));
+    assertThatThrownBy(
+            () ->
+                sql(
+                    "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'sort', "
+                        + "sort_order => 'zorder(col1)')",
+                    catalogName, tableIdent))
+        .as("Should reject calls with error message")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining(
+            "Cannot find column 'col1' in table schema (case sensitive = false): "
+                + "struct<1: c1: optional int, 2: c2: optional string, 3: c3: optional string>");
 
     // Test for z_order with sort_order
-    AssertHelpers.assertThrows(
-        "Should reject calls with error message",
-        IllegalArgumentException.class,
-        "Cannot mix identity sort columns and a Zorder sort expression:" + " c1,zorder(c2,c3)",
-        () ->
-            sql(
-                "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'sort', "
-                    + "sort_order => 'c1,zorder(c2,c3)')",
-                catalogName, tableIdent));
+    assertThatThrownBy(
+            () ->
+                sql(
+                    "CALL %s.system.rewrite_data_files(table => '%s', strategy => 'sort', "
+                        + "sort_order => 'c1,zorder(c2,c3)')",
+                    catalogName, tableIdent))
+        .as("Should reject calls with error message")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining(
+            "Cannot mix identity sort columns and a Zorder sort expression:" + " c1,zorder(c2,c3)");
   }
 
   @Test
   public void testInvalidCasesForRewriteDataFiles() {
-    AssertHelpers.assertThrows(
-        "Should not allow mixed args",
-        AnalysisException.class,
-        "Named and positional arguments cannot be mixed",
-        () -> sql("CALL %s.system.rewrite_data_files('n', table => 't')", catalogName));
+    assertThatThrownBy(
+            () -> sql("CALL %s.system.rewrite_data_files('n', table => 't')", catalogName))
+        .as("Should not allow mixed args")
+        .isInstanceOf(AnalysisException.class)
+        .hasMessageContaining("Named and positional arguments cannot be mixed");
 
-    AssertHelpers.assertThrows(
-        "Should not resolve procedures in arbitrary namespaces",
-        NoSuchProcedureException.class,
-        "not found",
-        () -> sql("CALL %s.custom.rewrite_data_files('n', 't')", catalogName));
+    assertThatThrownBy(() -> sql("CALL %s.custom.rewrite_data_files('n', 't')", catalogName))
+        .as("Should not resolve procedures in arbitrary namespaces")
+        .isInstanceOf(NoSuchProcedureException.class)
+        .hasMessageContaining("not found");
 
-    AssertHelpers.assertThrows(
-        "Should reject calls without all required args",
-        AnalysisException.class,
-        "Missing required parameters",
-        () -> sql("CALL %s.system.rewrite_data_files()", catalogName));
+    assertThatThrownBy(() -> sql("CALL %s.system.rewrite_data_files()", catalogName))
+        .as("Should reject calls without all required args")
+        .isInstanceOf(AnalysisException.class)
+        .hasMessageContaining("Missing required parameters");
 
-    AssertHelpers.assertThrows(
-        "Should reject duplicate arg names name",
-        AnalysisException.class,
-        "Duplicate procedure argument: table",
-        () -> sql("CALL %s.system.rewrite_data_files(table => 't', table => 't')", catalogName));
+    assertThatThrownBy(
+            () -> sql("CALL %s.system.rewrite_data_files(table => 't', table => 't')", catalogName))
+        .as("Should reject duplicate arg names name")
+        .isInstanceOf(AnalysisException.class)
+        .hasMessageContaining("Duplicate procedure argument: table");
 
-    AssertHelpers.assertThrows(
-        "Should reject calls with empty table identifier",
-        IllegalArgumentException.class,
-        "Cannot handle an empty identifier",
-        () -> sql("CALL %s.system.rewrite_data_files('')", catalogName));
+    assertThatThrownBy(() -> sql("CALL %s.system.rewrite_data_files('')", catalogName))
+        .as("Should reject calls with empty table identifier")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Cannot handle an empty identifier");
   }
 
   @Test
@@ -697,6 +732,26 @@ public class TestRewriteDataFilesProcedure extends SparkExtensionsTestBase {
 
     List<Object[]> actualRecords = currentData();
     assertEquals("Data after compaction should not change", expectedRecords, actualRecords);
+  }
+
+  @Test
+  public void testRewriteWithUntranslatedOrUnconvertedFilter() {
+    createTable();
+    assertThatThrownBy(
+            () ->
+                sql(
+                    "CALL %s.system.rewrite_data_files(table => '%s', where => 'lower(c2) = \"fo\"')",
+                    catalogName, tableIdent))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Cannot translate Spark expression");
+
+    assertThatThrownBy(
+            () ->
+                sql(
+                    "CALL %s.system.rewrite_data_files(table => '%s', where => 'c2 like \"%%fo\"')",
+                    catalogName, tableIdent))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Cannot convert Spark filter");
   }
 
   private void createTable() {

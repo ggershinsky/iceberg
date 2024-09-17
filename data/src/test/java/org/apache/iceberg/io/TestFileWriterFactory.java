@@ -21,14 +21,21 @@ package org.apache.iceberg.io;
 import static org.apache.iceberg.MetadataColumns.DELETE_FILE_PATH;
 import static org.apache.iceberg.MetadataColumns.DELETE_FILE_POS;
 import static org.apache.iceberg.MetadataColumns.DELETE_FILE_ROW_FIELD_NAME;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.Parameter;
+import org.apache.iceberg.ParameterizedTestExtension;
+import org.apache.iceberg.Parameters;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.StructLike;
@@ -46,48 +53,38 @@ import org.apache.iceberg.orc.ORC;
 import org.apache.iceberg.parquet.Parquet;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.CharSequenceSet;
 import org.apache.iceberg.util.Pair;
 import org.apache.iceberg.util.StructLikeSet;
-import org.junit.Assert;
-import org.junit.Assume;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 
-@RunWith(Parameterized.class)
+@ExtendWith(ParameterizedTestExtension.class)
 public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
-  @Parameterized.Parameters(name = "FileFormat={0}, Partitioned={1}")
-  public static Object[] parameters() {
-    return new Object[][] {
-      new Object[] {FileFormat.AVRO, false},
-      new Object[] {FileFormat.AVRO, true},
-      new Object[] {FileFormat.PARQUET, false},
-      new Object[] {FileFormat.PARQUET, true},
-      new Object[] {FileFormat.ORC, false},
-      new Object[] {FileFormat.ORC, true}
-    };
+  @Parameters(name = "formatVersion = {0}, fileFormat = {1}, Partitioned = {2}")
+  protected static List<Object> parameters() {
+    return Arrays.asList(
+        new Object[] {2, FileFormat.AVRO, false},
+        new Object[] {2, FileFormat.AVRO, true},
+        new Object[] {2, FileFormat.PARQUET, false},
+        new Object[] {2, FileFormat.PARQUET, true},
+        new Object[] {2, FileFormat.ORC, false},
+        new Object[] {2, FileFormat.ORC, true});
   }
 
-  private static final int TABLE_FORMAT_VERSION = 2;
   private static final String PARTITION_VALUE = "aaa";
 
-  private final FileFormat fileFormat;
-  private final boolean partitioned;
-  private final List<T> dataRows;
+  @Parameter(index = 1)
+  private FileFormat fileFormat;
+
+  @Parameter(index = 2)
+  private boolean partitioned;
 
   private StructLike partition = null;
   private OutputFileFactory fileFactory = null;
-
-  public TestFileWriterFactory(FileFormat fileFormat, boolean partitioned) {
-    super(TABLE_FORMAT_VERSION);
-    this.fileFormat = fileFormat;
-    this.partitioned = partitioned;
-    this.dataRows =
-        ImmutableList.of(
-            toRow(1, "aaa"), toRow(2, "aaa"), toRow(3, "aaa"), toRow(4, "aaa"), toRow(5, "aaa"));
-  }
+  private List<T> dataRows;
 
   protected abstract StructLikeSet toSet(Iterable<T> records);
 
@@ -96,10 +93,10 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
   }
 
   @Override
-  @Before
+  @BeforeEach
   public void setupTable() throws Exception {
-    this.tableDir = temp.newFolder();
-    Assert.assertTrue(tableDir.delete()); // created during table creation
+    this.tableDir = Files.createTempDirectory(temp, "junit").toFile();
+    assertThat(tableDir.delete()).isTrue(); // created during table creation
 
     this.metadataDir = new File(tableDir, "metadata");
 
@@ -112,9 +109,13 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
     }
 
     this.fileFactory = OutputFileFactory.builderFor(table, 1, 1).format(fileFormat).build();
+
+    this.dataRows =
+        ImmutableList.of(
+            toRow(1, "aaa"), toRow(2, "aaa"), toRow(3, "aaa"), toRow(4, "aaa"), toRow(5, "aaa"));
   }
 
-  @Test
+  @TestTemplate
   public void testDataWriter() throws IOException {
     FileWriterFactory<T> writerFactory = newWriterFactory(table.schema());
 
@@ -122,10 +123,10 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
 
     table.newRowDelta().addRows(dataFile).commit();
 
-    Assert.assertEquals("Records should match", toSet(dataRows), actualRowSet("*"));
+    assertThat(actualRowSet("*")).isEqualTo(toSet(dataRows));
   }
 
-  @Test
+  @TestTemplate
   public void testEqualityDeleteWriter() throws IOException {
     List<Integer> equalityFieldIds = ImmutableList.of(table.schema().findField("id").fieldId());
     Schema equalityDeleteRowSchema = table.schema().select("id");
@@ -149,19 +150,19 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
             deleteRecord.copy("id", 1), deleteRecord.copy("id", 3), deleteRecord.copy("id", 5));
     InputFile inputDeleteFile = table.io().newInputFile(deleteFile.path().toString());
     List<Record> actualDeletes = readFile(equalityDeleteRowSchema, inputDeleteFile);
-    Assert.assertEquals("Delete records must match", expectedDeletes, actualDeletes);
+    assertThat(actualDeletes).isEqualTo(expectedDeletes);
 
     // commit the written delete file
     table.newRowDelta().addDeletes(deleteFile).commit();
 
     // verify the delete file is applied correctly
     List<T> expectedRows = ImmutableList.of(toRow(2, "aaa"), toRow(4, "aaa"));
-    Assert.assertEquals("Records should match", toSet(expectedRows), actualRowSet("*"));
+    assertThat(actualRowSet("*")).isEqualTo(toSet(expectedRows));
   }
 
-  @Test
+  @TestTemplate
   public void testEqualityDeleteWriterWithMultipleSpecs() throws IOException {
-    Assume.assumeFalse("Table must start unpartitioned", partitioned);
+    assumeThat(partitioned).isFalse();
 
     List<Integer> equalityFieldIds = ImmutableList.of(table.schema().findField("id").fieldId());
     Schema equalityDeleteRowSchema = table.schema().select("id");
@@ -170,8 +171,9 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
 
     // write an unpartitioned data file
     DataFile firstDataFile = writeData(writerFactory, dataRows, table.spec(), partition);
-    Assert.assertEquals(
-        "First data file must be unpartitioned", 0, firstDataFile.partition().size());
+    assertThat(firstDataFile.partition().size())
+        .as("First data file must be unpartitioned")
+        .isEqualTo(0);
 
     List<T> deletes =
         ImmutableList.of(toRow(1, "aaa"), toRow(2, "aaa"), toRow(3, "aaa"), toRow(4, "aaa"));
@@ -179,8 +181,9 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
     // write an unpartitioned delete file
     DeleteFile firstDeleteFile =
         writeEqualityDeletes(writerFactory, deletes, table.spec(), partition);
-    Assert.assertEquals(
-        "First delete file must be unpartitioned", 0, firstDeleteFile.partition().size());
+    assertThat(firstDeleteFile.partition().size())
+        .as("First delete file must be unpartitioned")
+        .isEqualTo(0);
 
     // commit the first data and delete files
     table.newAppend().appendFile(firstDataFile).commit();
@@ -193,14 +196,16 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
 
     // write a partitioned data file
     DataFile secondDataFile = writeData(writerFactory, dataRows, table.spec(), partition);
-    Assert.assertEquals(
-        "Second data file must be partitioned", 1, secondDataFile.partition().size());
+    assertThat(secondDataFile.partition().size())
+        .as("Second data file must be partitioned")
+        .isEqualTo(1);
 
     // write a partitioned delete file
     DeleteFile secondDeleteFile =
         writeEqualityDeletes(writerFactory, deletes, table.spec(), partition);
-    Assert.assertEquals(
-        "Second delete file must be artitioned", 1, secondDeleteFile.partition().size());
+    assertThat(secondDeleteFile.partition().size())
+        .as("Second delete file must be partitioned")
+        .isEqualTo(1);
 
     // commit the second data and delete files
     table.newAppend().appendFile(secondDataFile).commit();
@@ -208,10 +213,10 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
 
     // verify both delete files are applied correctly
     List<T> expectedRows = ImmutableList.of(toRow(5, "aaa"), toRow(5, "aaa"));
-    Assert.assertEquals("Records should match", toSet(expectedRows), actualRowSet("*"));
+    assertThat(actualRowSet("*")).isEqualTo(toSet(expectedRows));
   }
 
-  @Test
+  @TestTemplate
   public void testPositionDeleteWriter() throws IOException {
     FileWriterFactory<T> writerFactory = newWriterFactory(table.schema());
 
@@ -229,6 +234,21 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
     DeleteFile deleteFile = result.first();
     CharSequenceSet referencedDataFiles = result.second();
 
+    if (fileFormat == FileFormat.AVRO) {
+      assertThat(deleteFile.lowerBounds()).isNull();
+      assertThat(deleteFile.upperBounds()).isNull();
+      assertThat(deleteFile.columnSizes()).isNull();
+    } else {
+      assertThat(referencedDataFiles).hasSize(1);
+      assertThat(deleteFile.lowerBounds()).hasSize(2).containsKey(DELETE_FILE_PATH.fieldId());
+      assertThat(deleteFile.upperBounds()).hasSize(2).containsKey(DELETE_FILE_PATH.fieldId());
+      assertThat(deleteFile.columnSizes()).hasSize(2);
+    }
+
+    assertThat(deleteFile.valueCounts()).isNull();
+    assertThat(deleteFile.nullValueCounts()).isNull();
+    assertThat(deleteFile.nanValueCounts()).isNull();
+
     // verify the written delete file
     GenericRecord deleteRecord = GenericRecord.create(DeleteSchemaUtil.pathPosSchema());
     List<Record> expectedDeletes =
@@ -239,7 +259,7 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
                 DELETE_FILE_PATH.name(), dataFile.path(), DELETE_FILE_POS.name(), 4L));
     InputFile inputDeleteFile = table.io().newInputFile(deleteFile.path().toString());
     List<Record> actualDeletes = readFile(DeleteSchemaUtil.pathPosSchema(), inputDeleteFile);
-    Assert.assertEquals("Delete records must match", expectedDeletes, actualDeletes);
+    assertThat(actualDeletes).isEqualTo(expectedDeletes);
 
     // commit the data and delete files
     table
@@ -252,10 +272,10 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
 
     // verify the delete file is applied correctly
     List<T> expectedRows = ImmutableList.of(toRow(2, "aaa"), toRow(4, "aaa"));
-    Assert.assertEquals("Records should match", toSet(expectedRows), actualRowSet("*"));
+    assertThat(actualRowSet("*")).isEqualTo(toSet(expectedRows));
   }
 
-  @Test
+  @TestTemplate
   public void testPositionDeleteWriterWithRow() throws IOException {
     FileWriterFactory<T> writerFactory = newWriterFactory(table.schema(), table.schema());
 
@@ -269,6 +289,36 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
         writePositionDeletes(writerFactory, deletes, table.spec(), partition);
     DeleteFile deleteFile = result.first();
     CharSequenceSet referencedDataFiles = result.second();
+
+    if (fileFormat == FileFormat.AVRO) {
+      assertThat(deleteFile.lowerBounds()).isNull();
+      assertThat(deleteFile.upperBounds()).isNull();
+      assertThat(deleteFile.columnSizes()).isNull();
+      assertThat(deleteFile.valueCounts()).isNull();
+      assertThat(deleteFile.nullValueCounts()).isNull();
+      assertThat(deleteFile.nanValueCounts()).isNull();
+    } else {
+      assertThat(referencedDataFiles).hasSize(1);
+      assertThat(deleteFile.lowerBounds())
+          .hasSize(4)
+          .containsKey(DELETE_FILE_PATH.fieldId())
+          .containsKey(DELETE_FILE_POS.fieldId());
+      for (Types.NestedField column : table.schema().columns()) {
+        assertThat(deleteFile.lowerBounds()).containsKey(column.fieldId());
+      }
+      assertThat(deleteFile.upperBounds())
+          .hasSize(4)
+          .containsKey(DELETE_FILE_PATH.fieldId())
+          .containsKey(DELETE_FILE_POS.fieldId());
+      for (Types.NestedField column : table.schema().columns()) {
+        assertThat(deleteFile.upperBounds()).containsKey(column.fieldId());
+      }
+      // ORC also contains metrics for the deleted row struct, not just actual data fields
+      assertThat(deleteFile.columnSizes()).hasSizeGreaterThanOrEqualTo(4);
+      assertThat(deleteFile.valueCounts()).hasSizeGreaterThanOrEqualTo(2);
+      assertThat(deleteFile.nullValueCounts()).hasSizeGreaterThanOrEqualTo(2);
+      assertThat(deleteFile.nanValueCounts()).isNull();
+    }
 
     // verify the written delete file
     GenericRecord deletedRow = GenericRecord.create(table.schema());
@@ -285,7 +335,7 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
     List<Record> expectedDeletes = ImmutableList.of(deleteRecord.copy(deleteRecordColumns));
     InputFile inputDeleteFile = table.io().newInputFile(deleteFile.path().toString());
     List<Record> actualDeletes = readFile(positionDeleteSchema, inputDeleteFile);
-    Assert.assertEquals("Delete records must match", expectedDeletes, actualDeletes);
+    assertThat(actualDeletes).isEqualTo(expectedDeletes);
 
     // commit the data and delete files
     table
@@ -299,7 +349,63 @@ public abstract class TestFileWriterFactory<T> extends WriterTestBase<T> {
     // verify the delete file is applied correctly
     List<T> expectedRows =
         ImmutableList.of(toRow(2, "aaa"), toRow(3, "aaa"), toRow(4, "aaa"), toRow(5, "aaa"));
-    Assert.assertEquals("Records should match", toSet(expectedRows), actualRowSet("*"));
+    assertThat(actualRowSet("*")).isEqualTo(toSet(expectedRows));
+  }
+
+  @TestTemplate
+  public void testPositionDeleteWriterMultipleDataFiles() throws IOException {
+    FileWriterFactory<T> writerFactory = newWriterFactory(table.schema());
+
+    // write two data files
+    DataFile dataFile1 = writeData(writerFactory, dataRows, table.spec(), partition);
+    DataFile dataFile2 = writeData(writerFactory, dataRows, table.spec(), partition);
+
+    // write a position delete file referencing both
+    List<PositionDelete<T>> deletes =
+        ImmutableList.of(
+            positionDelete(dataFile1.path(), 0L, null),
+            positionDelete(dataFile1.path(), 2L, null),
+            positionDelete(dataFile2.path(), 4L, null));
+    Pair<DeleteFile, CharSequenceSet> result =
+        writePositionDeletes(writerFactory, deletes, table.spec(), partition);
+    DeleteFile deleteFile = result.first();
+    CharSequenceSet referencedDataFiles = result.second();
+
+    // verify the written delete file has NO lower and upper bounds
+    assertThat(referencedDataFiles).hasSize(2);
+    assertThat(deleteFile.lowerBounds()).isNull();
+    assertThat(deleteFile.upperBounds()).isNull();
+    assertThat(deleteFile.valueCounts()).isNull();
+    assertThat(deleteFile.nullValueCounts()).isNull();
+    assertThat(deleteFile.nanValueCounts()).isNull();
+
+    if (fileFormat == FileFormat.AVRO) {
+      assertThat(deleteFile.columnSizes()).isNull();
+    } else {
+      assertThat(deleteFile.columnSizes()).hasSize(2);
+    }
+
+    // commit the data and delete files
+    table
+        .newRowDelta()
+        .addRows(dataFile1)
+        .addRows(dataFile2)
+        .addDeletes(deleteFile)
+        .validateDataFilesExist(referencedDataFiles)
+        .validateDeletedFiles()
+        .commit();
+
+    // verify the delete file is applied correctly
+    List<T> expectedRows =
+        ImmutableList.of(
+            toRow(2, "aaa"),
+            toRow(4, "aaa"),
+            toRow(5, "aaa"),
+            toRow(1, "aaa"),
+            toRow(2, "aaa"),
+            toRow(3, "aaa"),
+            toRow(4, "aaa"));
+    assertThat(actualRowSet("*")).isEqualTo(toSet(expectedRows));
   }
 
   private DataFile writeData(

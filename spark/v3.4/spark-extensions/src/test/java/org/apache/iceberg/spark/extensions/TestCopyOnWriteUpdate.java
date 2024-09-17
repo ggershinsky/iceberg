@@ -19,6 +19,7 @@
 package org.apache.iceberg.spark.extensions;
 
 import static org.apache.iceberg.TableProperties.UPDATE_ISOLATION_LEVEL;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
@@ -31,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.iceberg.AppendFiles;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.PlanningMode;
 import org.apache.iceberg.RowLevelOperationMode;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
@@ -44,7 +46,6 @@ import org.apache.iceberg.spark.Spark3Util;
 import org.apache.iceberg.spark.SparkSQLProperties;
 import org.apache.iceberg.util.SnapshotUtil;
 import org.apache.spark.sql.internal.SQLConf;
-import org.assertj.core.api.Assertions;
 import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Test;
@@ -59,7 +60,8 @@ public class TestCopyOnWriteUpdate extends TestUpdate {
       boolean vectorized,
       String distributionMode,
       boolean fanoutEnabled,
-      String branch) {
+      String branch,
+      PlanningMode planningMode) {
     super(
         catalogName,
         implementation,
@@ -68,7 +70,8 @@ public class TestCopyOnWriteUpdate extends TestUpdate {
         vectorized,
         distributionMode,
         fanoutEnabled,
-        branch);
+        branch,
+        planningMode);
   }
 
   @Override
@@ -149,7 +152,7 @@ public class TestCopyOnWriteUpdate extends TestUpdate {
             });
 
     try {
-      Assertions.assertThatThrownBy(updateFuture::get)
+      assertThatThrownBy(updateFuture::get)
           .isInstanceOf(ExecutionException.class)
           .cause()
           .isInstanceOf(IllegalStateException.class)

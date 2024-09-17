@@ -19,9 +19,10 @@
 package org.apache.iceberg.aws.s3;
 
 import static org.apache.iceberg.metrics.MetricsContext.nullMetrics;
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.fail;
 import static org.mockito.AdditionalAnswers.delegatesTo;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doThrow;
@@ -30,7 +31,7 @@ import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
-import com.adobe.testing.s3mock.junit4.S3MockRule;
+import com.adobe.testing.s3mock.junit5.S3MockExtension;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -46,15 +47,13 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
-import org.assertj.core.api.Assertions;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
-import org.mockito.junit.MockitoJUnitRunner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import software.amazon.awssdk.core.ResponseBytes;
@@ -63,6 +62,7 @@ import software.amazon.awssdk.core.sync.ResponseTransformer;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.AbortMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.BucketAlreadyExistsException;
+import software.amazon.awssdk.services.s3.model.BucketAlreadyOwnedByYouException;
 import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
@@ -72,15 +72,16 @@ import software.amazon.awssdk.services.s3.model.Tag;
 import software.amazon.awssdk.services.s3.model.UploadPartRequest;
 import software.amazon.awssdk.utils.BinaryUtils;
 
-@RunWith(MockitoJUnitRunner.class)
+@ExtendWith(S3MockExtension.class)
 public class TestS3OutputStream {
   private static final Logger LOG = LoggerFactory.getLogger(TestS3OutputStream.class);
   private static final String BUCKET = "test-bucket";
   private static final int FIVE_MBS = 5 * 1024 * 1024;
 
-  @ClassRule public static final S3MockRule S3_MOCK_RULE = S3MockRule.builder().silent().build();
+  @RegisterExtension
+  public static final S3MockExtension S3_MOCK = S3MockExtension.builder().silent().build();
 
-  private final S3Client s3 = S3_MOCK_RULE.createS3ClientV2();
+  private final S3Client s3 = S3_MOCK.createS3ClientV2();
   private final S3Client s3mock = mock(S3Client.class, delegatesTo(s3));
   private final Random random = new Random(1);
   private final Path tmpDir = Files.createTempDirectory("s3fileio-test-");
@@ -102,13 +103,13 @@ public class TestS3OutputStream {
 
   public TestS3OutputStream() throws IOException {}
 
-  @Before
+  @BeforeEach
   public void before() {
     properties.setChecksumEnabled(false);
     createBucket(BUCKET);
   }
 
-  @After
+  @AfterEach
   public void after() {
     File newStagingDirectory = new File(newTmpDirectory);
     if (newStagingDirectory.exists()) {
@@ -126,7 +127,7 @@ public class TestS3OutputStream {
     RuntimeException mockException = new RuntimeException("mock uploadPart failure");
     doThrow(mockException).when(s3mock).uploadPart((UploadPartRequest) any(), (RequestBody) any());
 
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () -> {
               try (S3OutputStream stream =
                   new S3OutputStream(s3mock, randomURI(), properties, nullMetrics())) {
@@ -146,7 +147,7 @@ public class TestS3OutputStream {
         .when(s3mock)
         .completeMultipartUpload((CompleteMultipartUploadRequest) any());
 
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () -> {
               try (S3OutputStream stream =
                   new S3OutputStream(s3mock, randomURI(), properties, nullMetrics())) {
@@ -191,11 +192,11 @@ public class TestS3OutputStream {
         .putObject(any(PutObjectRequest.class), any(RequestBody.class));
     S3OutputStream stream = new S3OutputStream(s3mock, randomURI(), properties, nullMetrics());
 
-    Assertions.assertThatThrownBy(stream::close)
+    assertThatThrownBy(stream::close)
         .isInstanceOf(mockException.getClass())
         .hasMessageContaining(mockException.getMessage());
 
-    Assertions.assertThatNoException().isThrownBy(stream::close);
+    assertThatNoException().isThrownBy(stream::close);
   }
 
   private void writeTest() {
@@ -255,7 +256,7 @@ public class TestS3OutputStream {
       for (int i = 0; i < uploadPartRequests.size(); ++i) {
         int offset = i * FIVE_MBS;
         int len = (i + 1) * FIVE_MBS - 1 > data.length ? data.length - offset : FIVE_MBS;
-        assertEquals(getDigest(data, offset, len), uploadPartRequests.get(i).contentMD5());
+        assertThat(uploadPartRequests.get(i).contentMD5()).isEqualTo(getDigest(data, offset, len));
       }
     }
   }
@@ -264,7 +265,7 @@ public class TestS3OutputStream {
       byte[] data, ArgumentCaptor<PutObjectRequest> putObjectRequestArgumentCaptor) {
     if (properties.isChecksumEnabled()) {
       List<PutObjectRequest> putObjectRequests = putObjectRequestArgumentCaptor.getAllValues();
-      assertEquals(getDigest(data, 0, data.length), putObjectRequests.get(0).contentMD5());
+      assertThat(putObjectRequests.get(0).contentMD5()).isEqualTo(getDigest(data, 0, data.length));
     }
   }
 
@@ -272,7 +273,7 @@ public class TestS3OutputStream {
     if (properties.isChecksumEnabled()) {
       List<PutObjectRequest> putObjectRequests = putObjectRequestArgumentCaptor.getAllValues();
       String tagging = putObjectRequests.get(0).tagging();
-      assertEquals(getTags(properties.writeTags()), tagging);
+      assertThat(getTags(properties.writeTags())).isEqualTo(tagging);
     }
   }
 
@@ -286,7 +287,7 @@ public class TestS3OutputStream {
       md5.update(data, offset, length);
       return BinaryUtils.toBase64(md5.digest());
     } catch (NoSuchAlgorithmException e) {
-      fail(String.format("Failed to get MD5 MessageDigest. %s", e));
+      fail("Failed to get MD5 MessageDigest. %s", e);
     }
     return null;
   }
@@ -295,11 +296,11 @@ public class TestS3OutputStream {
     try (S3OutputStream stream = new S3OutputStream(client, uri, properties, nullMetrics())) {
       if (arrayWrite) {
         stream.write(data);
-        assertEquals(data.length, stream.getPos());
+        assertThat(stream.getPos()).isEqualTo(data.length);
       } else {
         for (int i = 0; i < data.length; i++) {
           stream.write(data[i]);
-          assertEquals(i + 1, stream.getPos());
+          assertThat(stream.getPos()).isEqualTo(i + 1);
         }
       }
     } catch (IOException e) {
@@ -307,11 +308,11 @@ public class TestS3OutputStream {
     }
 
     byte[] actual = readS3Data(uri);
-    assertArrayEquals(data, actual);
+    assertThat(actual).isEqualTo(data);
 
     // Verify all staging files are cleaned up
     try {
-      assertEquals(0, Files.list(tmpDir).count());
+      assertThat(Files.list(tmpDir)).isEmpty();
     } catch (IOException e) {
       throw new UncheckedIOException(e);
     }
@@ -339,7 +340,7 @@ public class TestS3OutputStream {
   private void createBucket(String bucketName) {
     try {
       s3.createBucket(CreateBucketRequest.builder().bucket(bucketName).build());
-    } catch (BucketAlreadyExistsException e) {
+    } catch (BucketAlreadyExistsException | BucketAlreadyOwnedByYouException e) {
       // do nothing
     }
   }

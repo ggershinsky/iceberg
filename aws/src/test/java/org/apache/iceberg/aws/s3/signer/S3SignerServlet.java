@@ -21,6 +21,7 @@ package org.apache.iceberg.aws.s3.signer;
 import static java.lang.String.format;
 import static org.apache.iceberg.rest.RESTCatalogAdapter.castRequest;
 import static org.apache.iceberg.rest.RESTCatalogAdapter.castResponse;
+import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.InputStreamReader;
@@ -30,8 +31,10 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import javax.servlet.http.HttpServlet;
@@ -41,6 +44,7 @@ import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.HttpHeaders;
 import org.apache.iceberg.exceptions.RESTException;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.relocated.com.google.common.io.CharStreams;
@@ -78,8 +82,40 @@ public class S3SignerServlet extends HttpServlet {
       ImmutableMap.of(HttpHeaders.CONTENT_TYPE, ContentType.APPLICATION_JSON.getMimeType());
   private final ObjectMapper mapper;
 
+  private List<SignRequestValidator> s3SignRequestValidators = Lists.newArrayList();
+
+  /**
+   * SignRequestValidator is a wrapper class used for validating the contents of the S3SignRequest
+   * and thus verifying the behavior of the client during testing.
+   */
+  public static class SignRequestValidator {
+    private final Predicate<S3SignRequest> requestMatcher;
+    private final Predicate<S3SignRequest> requestExpectation;
+    private final String assertMessage;
+
+    public SignRequestValidator(
+        Predicate<S3SignRequest> requestExpectation,
+        Predicate<S3SignRequest> requestMatcher,
+        String assertMessage) {
+      this.requestExpectation = requestExpectation;
+      this.requestMatcher = requestMatcher;
+      this.assertMessage = assertMessage;
+    }
+
+    void validateRequest(S3SignRequest request) {
+      if (requestMatcher.test(request)) {
+        assertThat(requestExpectation.test(request)).as(assertMessage).isTrue();
+      }
+    }
+  }
+
   public S3SignerServlet(ObjectMapper mapper) {
     this.mapper = mapper;
+  }
+
+  public S3SignerServlet(ObjectMapper mapper, List<SignRequestValidator> s3SignRequestValidators) {
+    this.mapper = mapper;
+    this.s3SignRequestValidators = s3SignRequestValidators;
   }
 
   @Override
@@ -112,7 +148,7 @@ public class S3SignerServlet extends HttpServlet {
                 .withToken("client-credentials-token:sub=" + requestMap.get("client_id"))
                 .withIssuedTokenType("urn:ietf:params:oauth:token-type:access_token")
                 .withTokenType("Bearer")
-                .setExpirationInSeconds(100)
+                .setExpirationInSeconds(10000)
                 .build());
 
       case "urn:ietf:params:oauth:grant-type:token-exchange":
@@ -127,7 +163,7 @@ public class S3SignerServlet extends HttpServlet {
                 .withToken(token)
                 .withIssuedTokenType("urn:ietf:params:oauth:token-type:access_token")
                 .withTokenType("Bearer")
-                .setExpirationInSeconds(100)
+                .setExpirationInSeconds(10000)
                 .build());
 
       default:
@@ -150,12 +186,12 @@ public class S3SignerServlet extends HttpServlet {
 
     Map<String, List<String>> unsignedHeaders =
         request.headers().entrySet().stream()
-            .filter(e -> UNSIGNED_HEADERS.contains(e.getKey().toLowerCase()))
+            .filter(e -> UNSIGNED_HEADERS.contains(e.getKey().toLowerCase(Locale.ROOT)))
             .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 
     Map<String, List<String>> signedHeaders =
         request.headers().entrySet().stream()
-            .filter(e -> !UNSIGNED_HEADERS.contains(e.getKey().toLowerCase()))
+            .filter(e -> !UNSIGNED_HEADERS.contains(e.getKey().toLowerCase(Locale.ROOT)))
             .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 
     SdkHttpFullRequest sign =
@@ -188,6 +224,7 @@ public class S3SignerServlet extends HttpServlet {
         S3SignRequest s3SignRequest =
             castRequest(
                 S3SignRequest.class, mapper.readValue(request.getReader(), S3SignRequest.class));
+        s3SignRequestValidators.forEach(validator -> validator.validateRequest(s3SignRequest));
         S3SignResponse s3SignResponse = signRequest(s3SignRequest);
         if (CACHEABLE_METHODS.contains(SdkHttpMethod.fromValue(s3SignRequest.method()))) {
           // tell the client this can be cached

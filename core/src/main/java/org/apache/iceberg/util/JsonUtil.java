@@ -26,14 +26,18 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.io.BaseEncoding;
 
 public class JsonUtil {
 
@@ -173,12 +177,24 @@ public class JsonUtil {
     return getString(property, node);
   }
 
+  public static ByteBuffer getByteBufferOrNull(String property, JsonNode node) {
+    if (!node.has(property) || node.get(property).isNull()) {
+      return null;
+    }
+
+    JsonNode pNode = node.get(property);
+    Preconditions.checkArgument(
+        pNode.isTextual(), "Cannot parse byte buffer from non-text value: %s: %s", property, pNode);
+    return ByteBuffer.wrap(
+        BaseEncoding.base16().decode(pNode.textValue().toUpperCase(Locale.ROOT)));
+  }
+
   public static Map<String, String> getStringMap(String property, JsonNode node) {
     Preconditions.checkArgument(node.has(property), "Cannot parse missing map: %s", property);
     JsonNode pNode = node.get(property);
     Preconditions.checkArgument(
         pNode != null && !pNode.isNull() && pNode.isObject(),
-        "Cannot parse from non-object value: %s: %s",
+        "Cannot parse string map from non-object value: %s: %s",
         property,
         pNode);
 
@@ -189,6 +205,25 @@ public class JsonUtil {
       builder.put(field, getString(field, pNode));
     }
     return builder.build();
+  }
+
+  public static Map<String, String> getStringMapNullableValues(String property, JsonNode node) {
+    Preconditions.checkArgument(node.has(property), "Cannot parse missing map: %s", property);
+    JsonNode pNode = node.get(property);
+    Preconditions.checkArgument(
+        pNode != null && !pNode.isNull() && pNode.isObject(),
+        "Cannot parse string map from non-object value: %s: %s",
+        property,
+        pNode);
+
+    Map<String, String> map = Maps.newHashMap();
+    Iterator<String> fields = pNode.fieldNames();
+    while (fields.hasNext()) {
+      String field = fields.next();
+      map.put(field, getStringOrNull(field, pNode));
+    }
+
+    return map;
   }
 
   public static String[] getStringArray(JsonNode node) {
@@ -229,6 +264,14 @@ public class JsonUtil {
         .build();
   }
 
+  public static int[] getIntArrayOrNull(String property, JsonNode node) {
+    if (!node.has(property) || node.get(property).isNull()) {
+      return null;
+    }
+
+    return ArrayUtil.toIntArray(getIntegerList(property, node));
+  }
+
   public static List<Integer> getIntegerList(String property, JsonNode node) {
     Preconditions.checkArgument(node.has(property), "Cannot parse missing list: %s", property);
     return ImmutableList.<Integer>builder()
@@ -253,6 +296,14 @@ public class JsonUtil {
 
   public static List<Long> getLongList(String property, JsonNode node) {
     Preconditions.checkArgument(node.has(property), "Cannot parse missing list: %s", property);
+    return ImmutableList.<Long>builder().addAll(new JsonLongArrayIterator(property, node)).build();
+  }
+
+  public static List<Long> getLongListOrNull(String property, JsonNode node) {
+    if (!node.has(property) || node.get(property).isNull()) {
+      return null;
+    }
+
     return ImmutableList.<Long>builder().addAll(new JsonLongArrayIterator(property, node)).build();
   }
 
@@ -291,7 +342,7 @@ public class JsonUtil {
       JsonNode pNode = node.get(property);
       Preconditions.checkArgument(
           pNode != null && !pNode.isNull() && pNode.isArray(),
-          "Cannot parse from non-array value: %s: %s",
+          "Cannot parse JSON array from non-array value: %s: %s",
           property,
           pNode);
       this.elements = pNode.elements();

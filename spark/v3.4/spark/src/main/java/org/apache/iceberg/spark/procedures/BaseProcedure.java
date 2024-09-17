@@ -24,6 +24,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.function.Function;
 import org.apache.iceberg.exceptions.ValidationException;
+import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.util.concurrent.MoreExecutors;
 import org.apache.iceberg.relocated.com.google.common.util.concurrent.ThreadFactoryBuilder;
@@ -32,6 +33,7 @@ import org.apache.iceberg.spark.Spark3Util.CatalogAndIdentifier;
 import org.apache.iceberg.spark.actions.SparkActions;
 import org.apache.iceberg.spark.procedures.SparkProcedures.ProcedureBuilder;
 import org.apache.iceberg.spark.source.SparkTable;
+import org.apache.spark.sql.AnalysisException;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
@@ -44,6 +46,7 @@ import org.apache.spark.sql.connector.catalog.Table;
 import org.apache.spark.sql.connector.catalog.TableCatalog;
 import org.apache.spark.sql.connector.iceberg.catalog.Procedure;
 import org.apache.spark.sql.execution.CacheManager;
+import org.apache.spark.sql.execution.datasources.SparkExpressionConverter;
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.DataTypes;
@@ -160,6 +163,17 @@ abstract class BaseProcedure implements Procedure {
     cacheManager.recacheByPlan(spark, relation);
   }
 
+  protected Expression filterExpression(Identifier ident, String where) {
+    try {
+      String name = Spark3Util.quotedFullIdentifier(tableCatalog.name(), ident);
+      org.apache.spark.sql.catalyst.expressions.Expression expression =
+          SparkExpressionConverter.collectResolvedSparkExpression(spark, name, where);
+      return SparkExpressionConverter.convertToIcebergExpression(expression);
+    } catch (AnalysisException e) {
+      throw new IllegalArgumentException("Cannot parse predicates in where option: " + where, e);
+    }
+  }
+
   protected InternalRow newInternalRow(Object... values) {
     return new GenericInternalRow(values);
   }
@@ -187,7 +201,7 @@ abstract class BaseProcedure implements Procedure {
 
   /**
    * Closes this procedure's executor service if a new one was created with {@link
-   * #executorService(int, String)}. Does not block for any remaining tasks.
+   * BaseProcedure#executorService(int, String)}. Does not block for any remaining tasks.
    */
   protected void closeService() {
     if (executorService != null) {

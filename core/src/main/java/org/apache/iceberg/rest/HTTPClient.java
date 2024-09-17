@@ -24,18 +24,25 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import org.apache.hc.client5.http.auth.CredentialsProvider;
 import org.apache.hc.client5.http.classic.methods.HttpUriRequest;
 import org.apache.hc.client5.http.classic.methods.HttpUriRequestBase;
+import org.apache.hc.client5.http.config.ConnectionConfig;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpResponse;
 import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.client5.http.io.HttpClientConnectionManager;
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpHeaders;
+import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpRequestInterceptor;
 import org.apache.hc.core5.http.HttpStatus;
 import org.apache.hc.core5.http.Method;
@@ -70,19 +77,36 @@ public class HTTPClient implements RESTClient {
   @VisibleForTesting
   static final String CLIENT_GIT_COMMIT_SHORT_HEADER = "X-Client-Git-Commit-Short";
 
+  private static final String REST_MAX_RETRIES = "rest.client.max-retries";
+  private static final String REST_MAX_CONNECTIONS = "rest.client.max-connections";
+  private static final int REST_MAX_CONNECTIONS_DEFAULT = 100;
+  private static final String REST_MAX_CONNECTIONS_PER_ROUTE = "rest.client.connections-per-route";
+  private static final int REST_MAX_CONNECTIONS_PER_ROUTE_DEFAULT = 100;
+
+  @VisibleForTesting
+  static final String REST_CONNECTION_TIMEOUT_MS = "rest.client.connection-timeout-ms";
+
+  @VisibleForTesting static final String REST_SOCKET_TIMEOUT_MS = "rest.client.socket-timeout-ms";
+
   private final String uri;
   private final CloseableHttpClient httpClient;
   private final ObjectMapper mapper;
 
   private HTTPClient(
       String uri,
+      HttpHost proxy,
+      CredentialsProvider proxyCredsProvider,
       Map<String, String> baseHeaders,
       ObjectMapper objectMapper,
-      HttpRequestInterceptor requestInterceptor) {
+      HttpRequestInterceptor requestInterceptor,
+      Map<String, String> properties,
+      HttpClientConnectionManager connectionManager) {
     this.uri = uri;
     this.mapper = objectMapper;
 
     HttpClientBuilder clientBuilder = HttpClients.custom();
+
+    clientBuilder.setConnectionManager(connectionManager);
 
     if (baseHeaders != null) {
       clientBuilder.setDefaultHeaders(
@@ -95,6 +119,17 @@ public class HTTPClient implements RESTClient {
       clientBuilder.addRequestInterceptorLast(requestInterceptor);
     }
 
+    int maxRetries = PropertyUtil.propertyAsInt(properties, REST_MAX_RETRIES, 5);
+    clientBuilder.setRetryStrategy(new ExponentialHttpRequestRetryStrategy(maxRetries));
+
+    if (proxy != null) {
+      if (proxyCredsProvider != null) {
+        clientBuilder.setDefaultCredentialsProvider(proxyCredsProvider);
+      }
+
+      clientBuilder.setProxy(proxy);
+    }
+
     this.httpClient = clientBuilder.build();
   }
 
@@ -105,7 +140,7 @@ public class HTTPClient implements RESTClient {
       }
 
       // EntityUtils.toString returns null when HttpEntity.getContent returns null.
-      return EntityUtils.toString(response.getEntity(), "UTF-8");
+      return EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
     } catch (IOException | ParseException e) {
       throw new RESTException(e, "Failed to convert HTTP response body to string");
     }
@@ -180,16 +215,24 @@ public class HTTPClient implements RESTClient {
   }
 
   private URI buildUri(String path, Map<String, String> params) {
-    String baseUri = String.format("%s/%s", uri, path);
+    // if full path is provided, use the input path as path
+    if (path.startsWith("/")) {
+      throw new RESTException(
+          "Received a malformed path for a REST request: %s. Paths should not start with /", path);
+    }
+    String fullPath =
+        (path.startsWith("https://") || path.startsWith("http://"))
+            ? path
+            : String.format("%s/%s", uri, path);
     try {
-      URIBuilder builder = new URIBuilder(baseUri);
+      URIBuilder builder = new URIBuilder(fullPath);
       if (params != null) {
         params.forEach(builder::addParameter);
       }
       return builder.build();
     } catch (URISyntaxException e) {
       throw new RESTException(
-          "Failed to create request URI from base %s, params %s", baseUri, params);
+          "Failed to create request URI from base %s, params %s", fullPath, params);
     }
   }
 
@@ -198,7 +241,7 @@ public class HTTPClient implements RESTClient {
    *
    * @param method - HTTP method, such as GET, POST, HEAD, etc.
    * @param queryParams - A map of query parameters
-   * @param path - URL path to send the request to
+   * @param path - URI to send the request to
    * @param requestBody - Content to place in the request body
    * @param responseType - Class of the Response type. Needs to have serializer registered with
    *     ObjectMapper
@@ -225,7 +268,7 @@ public class HTTPClient implements RESTClient {
    *
    * @param method - HTTP method, such as GET, POST, HEAD, etc.
    * @param queryParams - A map of query parameters
-   * @param path - URL path to send the request to
+   * @param path - URL to send the request to
    * @param requestBody - Content to place in the request body
    * @param responseType - Class of the Response type. Needs to have serializer registered with
    *     ObjectMapper
@@ -245,11 +288,6 @@ public class HTTPClient implements RESTClient {
       Map<String, String> headers,
       Consumer<ErrorResponse> errorHandler,
       Consumer<Map<String, String>> responseHeaders) {
-    if (path.startsWith("/")) {
-      throw new RESTException(
-          "Received a malformed path for a REST request: %s. Paths should not start with /", path);
-    }
-
     HttpUriRequestBase request = new HttpUriRequestBase(method.name(), buildUri(path, queryParams));
 
     if (requestBody instanceof Map) {
@@ -420,6 +458,47 @@ public class HTTPClient implements RESTClient {
     return instance;
   }
 
+  static HttpClientConnectionManager configureConnectionManager(Map<String, String> properties) {
+    PoolingHttpClientConnectionManagerBuilder connectionManagerBuilder =
+        PoolingHttpClientConnectionManagerBuilder.create();
+    ConnectionConfig connectionConfig = configureConnectionConfig(properties);
+    if (connectionConfig != null) {
+      connectionManagerBuilder.setDefaultConnectionConfig(connectionConfig);
+    }
+
+    return connectionManagerBuilder
+        .useSystemProperties()
+        .setMaxConnTotal(Integer.getInteger(REST_MAX_CONNECTIONS, REST_MAX_CONNECTIONS_DEFAULT))
+        .setMaxConnPerRoute(
+            PropertyUtil.propertyAsInt(
+                properties, REST_MAX_CONNECTIONS_PER_ROUTE, REST_MAX_CONNECTIONS_PER_ROUTE_DEFAULT))
+        .build();
+  }
+
+  @VisibleForTesting
+  static ConnectionConfig configureConnectionConfig(Map<String, String> properties) {
+    Long connectionTimeoutMillis =
+        PropertyUtil.propertyAsNullableLong(properties, REST_CONNECTION_TIMEOUT_MS);
+    Integer socketTimeoutMillis =
+        PropertyUtil.propertyAsNullableInt(properties, REST_SOCKET_TIMEOUT_MS);
+
+    if (connectionTimeoutMillis == null && socketTimeoutMillis == null) {
+      return null;
+    }
+
+    ConnectionConfig.Builder connConfigBuilder = ConnectionConfig.custom();
+
+    if (connectionTimeoutMillis != null) {
+      connConfigBuilder.setConnectTimeout(connectionTimeoutMillis, TimeUnit.MILLISECONDS);
+    }
+
+    if (socketTimeoutMillis != null) {
+      connConfigBuilder.setSocketTimeout(socketTimeoutMillis, TimeUnit.MILLISECONDS);
+    }
+
+    return connConfigBuilder.build();
+  }
+
   public static Builder builder(Map<String, String> properties) {
     return new Builder(properties);
   }
@@ -429,14 +508,29 @@ public class HTTPClient implements RESTClient {
     private final Map<String, String> baseHeaders = Maps.newHashMap();
     private String uri;
     private ObjectMapper mapper = RESTObjectMapper.mapper();
+    private HttpHost proxy;
+    private CredentialsProvider proxyCredentialsProvider;
 
     private Builder(Map<String, String> properties) {
       this.properties = properties;
     }
 
-    public Builder uri(String baseUri) {
-      Preconditions.checkNotNull(baseUri, "Invalid uri for http client: null");
-      this.uri = RESTUtil.stripTrailingSlash(baseUri);
+    public Builder uri(String path) {
+      Preconditions.checkNotNull(path, "Invalid uri for http client: null");
+      this.uri = RESTUtil.stripTrailingSlash(path);
+      return this;
+    }
+
+    public Builder withProxy(String hostname, int port) {
+      Preconditions.checkNotNull(hostname, "Invalid hostname for http client proxy: null");
+      this.proxy = new HttpHost(hostname, port);
+      return this;
+    }
+
+    public Builder withProxyCredentialsProvider(CredentialsProvider credentialsProvider) {
+      Preconditions.checkNotNull(
+          credentialsProvider, "Invalid credentials provider for http client proxy: null");
+      this.proxyCredentialsProvider = credentialsProvider;
       return this;
     }
 
@@ -465,19 +559,32 @@ public class HTTPClient implements RESTClient {
         interceptor = loadInterceptorDynamically(SIGV4_REQUEST_INTERCEPTOR_IMPL, properties);
       }
 
-      return new HTTPClient(uri, baseHeaders, mapper, interceptor);
+      if (this.proxyCredentialsProvider != null) {
+        Preconditions.checkNotNull(
+            proxy, "Invalid http client proxy for proxy credentials provider: null");
+      }
+
+      return new HTTPClient(
+          uri,
+          proxy,
+          proxyCredentialsProvider,
+          baseHeaders,
+          mapper,
+          interceptor,
+          properties,
+          configureConnectionManager(properties));
     }
   }
 
   private StringEntity toJson(Object requestBody) {
     try {
-      return new StringEntity(mapper.writeValueAsString(requestBody));
+      return new StringEntity(mapper.writeValueAsString(requestBody), StandardCharsets.UTF_8);
     } catch (JsonProcessingException e) {
       throw new RESTException(e, "Failed to write request body: %s", requestBody);
     }
   }
 
   private StringEntity toFormEncoding(Map<?, ?> formData) {
-    return new StringEntity(RESTUtil.encodeFormData(formData));
+    return new StringEntity(RESTUtil.encodeFormData(formData), StandardCharsets.UTF_8);
   }
 }

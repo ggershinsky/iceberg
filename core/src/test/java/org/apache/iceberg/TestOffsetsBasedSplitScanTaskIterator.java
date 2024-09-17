@@ -18,11 +18,12 @@
  */
 package org.apache.iceberg;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.util.List;
 import org.apache.iceberg.BaseFileScanTask.SplitScanTask;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestOffsetsBasedSplitScanTaskIterator {
   @Test
@@ -62,15 +63,15 @@ public class TestOffsetsBasedSplitScanTaskIterator {
             offsetRanges,
             TestOffsetsBasedSplitScanTaskIterator::createSplitTask);
     List<FileScanTask> tasks = Lists.newArrayList(splitTaskIterator);
-    Assert.assertEquals("Number of tasks don't match", offsetLenPairs.size(), tasks.size());
+    assertThat(tasks).as("Number of tasks don't match").hasSameSizeAs(offsetLenPairs);
 
     for (int i = 0; i < tasks.size(); i++) {
       FileScanTask task = tasks.get(i);
       List<Long> split = offsetLenPairs.get(i);
       long offset = split.get(0);
       long length = split.get(1);
-      Assert.assertEquals(offset, task.start());
-      Assert.assertEquals(length, task.length());
+      assertThat(task.start()).isEqualTo(offset);
+      assertThat(task.length()).isEqualTo(length);
     }
   }
 

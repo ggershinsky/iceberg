@@ -20,12 +20,15 @@ package org.apache.iceberg.aws.s3.signer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.stream.Collectors;
 import org.apache.iceberg.aws.s3.MinioContainer;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.rest.auth.OAuth2Properties;
 import org.eclipse.jetty.server.Server;
@@ -33,12 +36,11 @@ import org.eclipse.jetty.server.handler.gzip.GzipHandler;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.jetbrains.annotations.NotNull;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
@@ -57,8 +59,11 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.Delete;
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.UploadPartRequest;
 
@@ -69,18 +74,14 @@ public class TestS3RestSigner {
   static final AwsCredentialsProvider CREDENTIALS_PROVIDER =
       StaticCredentialsProvider.create(
           AwsBasicCredentials.create("accessKeyId", "secretAccessKey"));
+  private static final MinioContainer MINIO_CONTAINER =
+      new MinioContainer(CREDENTIALS_PROVIDER.resolveCredentials());
 
   private static Server httpServer;
   private static ValidatingSigner validatingSigner;
   private S3Client s3;
 
-  @Rule public TemporaryFolder temp = new TemporaryFolder();
-
-  @Rule
-  public MinioContainer minioContainer =
-      new MinioContainer(CREDENTIALS_PROVIDER.resolveCredentials());
-
-  @BeforeClass
+  @BeforeAll
   public static void beforeClass() throws Exception {
     if (null == httpServer) {
       httpServer = initHttpServer();
@@ -99,14 +100,20 @@ public class TestS3RestSigner {
             new CustomAwsS3V4Signer());
   }
 
-  @AfterClass
+  @AfterAll
   public static void afterClass() throws Exception {
     assertThat(validatingSigner.icebergSigner.tokenRefreshExecutor())
         .isInstanceOf(ScheduledThreadPoolExecutor.class);
 
     ScheduledThreadPoolExecutor executor =
         ((ScheduledThreadPoolExecutor) validatingSigner.icebergSigner.tokenRefreshExecutor());
-    // token expiration is set to 100s so there should be exactly one token scheduled for refresh
+    // token expiration is set to 10000s by the S3SignerServlet so there should be exactly one token
+    // scheduled for refresh. Such a high token expiration value is explicitly selected to be much
+    // larger than TestS3RestSigner would need to execute all tests.
+    // The reason why this check is done here with a high token expiration is to make sure that
+    // there aren't other token refreshes being scheduled after every sign request and after
+    // TestS3RestSigner completes all tests, there should be only this single token in the queue
+    // that is scheduled for refresh
     assertThat(executor.getPoolSize()).isEqualTo(1);
     assertThat(executor.getQueue())
         .as("should only have a single token scheduled for refresh")
@@ -123,8 +130,9 @@ public class TestS3RestSigner {
     }
   }
 
-  @Before
+  @BeforeEach
   public void before() throws Exception {
+    MINIO_CONTAINER.start();
     s3 =
         S3Client.builder()
             .region(REGION)
@@ -133,7 +141,7 @@ public class TestS3RestSigner {
                 s3ClientBuilder ->
                     s3ClientBuilder.httpClientBuilder(
                         software.amazon.awssdk.http.apache.ApacheHttpClient.builder()))
-            .endpointOverride(minioContainer.getURI())
+            .endpointOverride(MINIO_CONTAINER.getURI())
             .forcePathStyle(true) // OSX won't resolve subdomains
             .overrideConfiguration(
                 c -> c.putAdvancedOption(SdkAdvancedClientOption.SIGNER, validatingSigner))
@@ -152,15 +160,19 @@ public class TestS3RestSigner {
   }
 
   private static Server initHttpServer() throws Exception {
-    S3SignerServlet servlet = new S3SignerServlet(S3ObjectMapper.mapper());
+    S3SignerServlet.SignRequestValidator deleteObjectsWithBody =
+        new S3SignerServlet.SignRequestValidator(
+            (s3SignRequest) ->
+                "post".equalsIgnoreCase(s3SignRequest.method())
+                    && s3SignRequest.uri().getQuery().contains("delete"),
+            (s3SignRequest) -> s3SignRequest.body() != null && !s3SignRequest.body().isEmpty(),
+            "Sign request for delete objects should have a request body");
+    S3SignerServlet servlet =
+        new S3SignerServlet(S3ObjectMapper.mapper(), ImmutableList.of(deleteObjectsWithBody));
     ServletContextHandler servletContext =
         new ServletContextHandler(ServletContextHandler.NO_SESSIONS);
-    servletContext.setContextPath("/");
-    ServletHolder servletHolder = new ServletHolder(servlet);
-    servletHolder.setInitParameter("javax.ws.rs.Application", "ServiceListPublic");
-    servletContext.addServlet(servletHolder, "/*");
-    servletContext.setVirtualHosts(null);
-    servletContext.setGzipHandler(new GzipHandler());
+    servletContext.addServlet(new ServletHolder(servlet), "/*");
+    servletContext.setHandler(new GzipHandler());
 
     Server server = new Server(0);
     server.setHandler(servletContext);
@@ -182,6 +194,22 @@ public class TestS3RestSigner {
   }
 
   @Test
+  public void validateDeleteObjects() {
+    Path sourcePath = Paths.get("/etc/hosts");
+    s3.putObject(PutObjectRequest.builder().bucket(BUCKET).key("some/key1").build(), sourcePath);
+    s3.putObject(PutObjectRequest.builder().bucket(BUCKET).key("some/key2").build(), sourcePath);
+
+    Delete objectsToDelete =
+        Delete.builder()
+            .objects(
+                ObjectIdentifier.builder().key("some/key1").build(),
+                ObjectIdentifier.builder().key("some/key2").build())
+            .build();
+
+    s3.deleteObjects(DeleteObjectsRequest.builder().bucket(BUCKET).delete(objectsToDelete).build());
+  }
+
+  @Test
   public void validateListPrefix() {
     s3.listObjectsV2(ListObjectsV2Request.builder().bucket(BUCKET).prefix("some/prefix/").build());
   }
@@ -197,6 +225,11 @@ public class TestS3RestSigner {
   public void validatedCreateMultiPartUpload() {
     s3.createMultipartUpload(
         CreateMultipartUploadRequest.builder().bucket(BUCKET).key("some/multipart-key").build());
+  }
+
+  @AfterEach
+  public void after() {
+    MINIO_CONTAINER.stop();
   }
 
   @Test
@@ -297,7 +330,10 @@ public class TestS3RestSigner {
       // back after signing
       Map<String, List<String>> unsignedHeaders =
           request.headers().entrySet().stream()
-              .filter(e -> S3SignerServlet.UNSIGNED_HEADERS.contains(e.getKey().toLowerCase()))
+              .filter(
+                  e ->
+                      S3SignerServlet.UNSIGNED_HEADERS.contains(
+                          e.getKey().toLowerCase(Locale.ROOT)))
               .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
 
       SdkHttpFullRequest.Builder builder = request.toBuilder();

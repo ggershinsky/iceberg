@@ -18,6 +18,8 @@
  */
 package org.apache.iceberg.aws;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.io.IOException;
 import java.util.Map;
 import org.apache.hc.core5.http.HttpHeaders;
@@ -28,11 +30,10 @@ import org.apache.iceberg.rest.HTTPClient;
 import org.apache.iceberg.rest.auth.OAuth2Util;
 import org.apache.iceberg.rest.responses.ConfigResponse;
 import org.apache.iceberg.rest.responses.OAuthTokenResponse;
-import org.assertj.core.api.Assertions;
-import org.junit.AfterClass;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockserver.integration.ClientAndServer;
 import org.mockserver.model.Header;
 import org.mockserver.model.HttpRequest;
@@ -44,7 +45,7 @@ public class TestRESTSigV4Signer {
   private static ClientAndServer mockServer;
   private static HTTPClient client;
 
-  @BeforeClass
+  @BeforeAll
   public static void beforeClass() {
     mockServer = ClientAndServer.startClientAndServer();
 
@@ -66,13 +67,13 @@ public class TestRESTSigV4Signer {
             .build();
   }
 
-  @AfterClass
+  @AfterAll
   public static void afterClass() throws IOException {
     mockServer.stop();
     client.close();
   }
 
-  @Before
+  @BeforeEach
   public void before() {
     mockServer.reset();
   }
@@ -101,7 +102,7 @@ public class TestRESTSigV4Signer {
         client.get("v1/config", ConfigResponse.class, ImmutableMap.of(), e -> {});
 
     mockServer.verify(request, VerificationTimes.exactly(1));
-    Assertions.assertThat(response).isNotNull();
+    assertThat(response).isNotNull();
   }
 
   @Test
@@ -141,6 +142,6 @@ public class TestRESTSigV4Signer {
             "v1/oauth/token", formData, OAuthTokenResponse.class, ImmutableMap.of(), e -> {});
 
     mockServer.verify(request, VerificationTimes.exactly(1));
-    Assertions.assertThat(response).isNotNull();
+    assertThat(response).isNotNull();
   }
 }

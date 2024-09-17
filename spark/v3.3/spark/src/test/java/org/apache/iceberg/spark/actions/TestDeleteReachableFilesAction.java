@@ -19,6 +19,7 @@
 package org.apache.iceberg.spark.actions;
 
 import static org.apache.iceberg.types.Types.NestedField.optional;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.File;
 import java.util.Set;
@@ -27,7 +28,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.StreamSupport;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.iceberg.AssertHelpers;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DataFiles;
 import org.apache.iceberg.DeleteFile;
@@ -267,8 +267,6 @@ public class TestDeleteReachableFilesAction extends SparkTestBase {
 
   @Test
   public void testPositionDeleteFiles() {
-    table.updateProperties().set(TableProperties.FORMAT_VERSION, "2").commit();
-
     table.newAppend().appendFile(FILE_A).commit();
 
     table.newAppend().appendFile(FILE_B).commit();
@@ -277,13 +275,11 @@ public class TestDeleteReachableFilesAction extends SparkTestBase {
 
     DeleteReachableFiles baseRemoveFilesSparkAction =
         sparkActions().deleteReachableFiles(metadataLocation(table)).io(table.io());
-    checkRemoveFilesResults(2, 1, 0, 3, 3, 6, baseRemoveFilesSparkAction.execute());
+    checkRemoveFilesResults(2, 1, 0, 3, 3, 5, baseRemoveFilesSparkAction.execute());
   }
 
   @Test
   public void testEqualityDeleteFiles() {
-    table.updateProperties().set(TableProperties.FORMAT_VERSION, "2").commit();
-
     table.newAppend().appendFile(FILE_A).commit();
 
     table.newAppend().appendFile(FILE_B).commit();
@@ -292,7 +288,7 @@ public class TestDeleteReachableFilesAction extends SparkTestBase {
 
     DeleteReachableFiles baseRemoveFilesSparkAction =
         sparkActions().deleteReachableFiles(metadataLocation(table)).io(table.io());
-    checkRemoveFilesResults(2, 0, 1, 3, 3, 6, baseRemoveFilesSparkAction.execute());
+    checkRemoveFilesResults(2, 0, 1, 3, 3, 5, baseRemoveFilesSparkAction.execute());
   }
 
   @Test
@@ -366,22 +362,21 @@ public class TestDeleteReachableFilesAction extends SparkTestBase {
   public void testEmptyIOThrowsException() {
     DeleteReachableFiles baseRemoveFilesSparkAction =
         sparkActions().deleteReachableFiles(metadataLocation(table)).io(null);
-    AssertHelpers.assertThrows(
-        "FileIO can't be null in DeleteReachableFiles action",
-        IllegalArgumentException.class,
-        "File IO cannot be null",
-        baseRemoveFilesSparkAction::execute);
+    assertThatThrownBy(baseRemoveFilesSparkAction::execute)
+        .as("FileIO can't be null in DeleteReachableFiles action")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("File IO cannot be null");
   }
 
   @Test
   public void testRemoveFilesActionWhenGarbageCollectionDisabled() {
     table.updateProperties().set(TableProperties.GC_ENABLED, "false").commit();
 
-    AssertHelpers.assertThrows(
-        "Should complain about removing files when GC is disabled",
-        ValidationException.class,
-        "Cannot delete files: GC is disabled (deleting files may corrupt other tables)",
-        () -> sparkActions().deleteReachableFiles(metadataLocation(table)).execute());
+    assertThatThrownBy(() -> sparkActions().deleteReachableFiles(metadataLocation(table)).execute())
+        .as("Should complain about removing files when GC is disabled")
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining(
+            "Cannot delete files: GC is disabled (deleting files may corrupt other tables)");
   }
 
   private String metadataLocation(Table tbl) {

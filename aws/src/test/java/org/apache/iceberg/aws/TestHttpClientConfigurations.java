@@ -21,22 +21,23 @@ package org.apache.iceberg.aws;
 import java.time.Duration;
 import java.util.Map;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
+import software.amazon.awssdk.http.apache.ProxyConfiguration;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 
 public class TestHttpClientConfigurations {
   @Test
   public void testUrlConnectionOverrideConfigurations() {
     Map<String, String> properties = Maps.newHashMap();
-    properties.put(AwsProperties.HTTP_CLIENT_URLCONNECTION_SOCKET_TIMEOUT_MS, "90");
-    properties.put(AwsProperties.HTTP_CLIENT_URLCONNECTION_CONNECTION_TIMEOUT_MS, "80");
-    properties.put(AwsProperties.HTTP_CLIENT_APACHE_SOCKET_TIMEOUT_MS, "100");
-    properties.put(AwsProperties.HTTP_CLIENT_APACHE_CONNECTION_TIMEOUT_MS, "200");
-    AwsProperties awsProperties = new AwsProperties(properties);
+    properties.put(HttpClientProperties.URLCONNECTION_SOCKET_TIMEOUT_MS, "90");
+    properties.put(HttpClientProperties.URLCONNECTION_CONNECTION_TIMEOUT_MS, "80");
+    properties.put(HttpClientProperties.APACHE_SOCKET_TIMEOUT_MS, "100");
+    properties.put(HttpClientProperties.APACHE_CONNECTION_TIMEOUT_MS, "200");
+    properties.put(HttpClientProperties.PROXY_ENDPOINT, "http://proxy:8080");
     UrlConnectionHttpClientConfigurations urlConnectionHttpClientConfigurations =
-        UrlConnectionHttpClientConfigurations.create(awsProperties.httpClientProperties());
+        UrlConnectionHttpClientConfigurations.create(properties);
     UrlConnectionHttpClient.Builder urlConnectionHttpClientBuilder =
         UrlConnectionHttpClient.builder();
     UrlConnectionHttpClient.Builder spyUrlConnectionHttpClientBuilder =
@@ -47,14 +48,15 @@ public class TestHttpClientConfigurations {
 
     Mockito.verify(spyUrlConnectionHttpClientBuilder).socketTimeout(Duration.ofMillis(90));
     Mockito.verify(spyUrlConnectionHttpClientBuilder).connectionTimeout(Duration.ofMillis(80));
+    Mockito.verify(spyUrlConnectionHttpClientBuilder)
+        .proxyConfiguration(
+            Mockito.any(software.amazon.awssdk.http.urlconnection.ProxyConfiguration.class));
   }
 
   @Test
   public void testUrlConnectionDefaultConfigurations() {
-    Map<String, String> properties = Maps.newHashMap();
-    AwsProperties awsProperties = new AwsProperties(properties);
     UrlConnectionHttpClientConfigurations urlConnectionHttpClientConfigurations =
-        UrlConnectionHttpClientConfigurations.create(awsProperties.httpClientProperties());
+        UrlConnectionHttpClientConfigurations.create(Maps.newHashMap());
     UrlConnectionHttpClient.Builder urlConnectionHttpClientBuilder =
         UrlConnectionHttpClient.builder();
     UrlConnectionHttpClient.Builder spyUrlConnectionHttpClientBuilder =
@@ -67,25 +69,28 @@ public class TestHttpClientConfigurations {
         .connectionTimeout(Mockito.any(Duration.class));
     Mockito.verify(spyUrlConnectionHttpClientBuilder, Mockito.never())
         .socketTimeout(Mockito.any(Duration.class));
+    Mockito.verify(spyUrlConnectionHttpClientBuilder, Mockito.never())
+        .proxyConfiguration(
+            Mockito.any(software.amazon.awssdk.http.urlconnection.ProxyConfiguration.class));
   }
 
   @Test
   public void testApacheOverrideConfigurations() {
     Map<String, String> properties = Maps.newHashMap();
-    properties.put(AwsProperties.HTTP_CLIENT_URLCONNECTION_SOCKET_TIMEOUT_MS, "90");
-    properties.put(AwsProperties.HTTP_CLIENT_URLCONNECTION_CONNECTION_TIMEOUT_MS, "80");
-    properties.put(AwsProperties.HTTP_CLIENT_APACHE_SOCKET_TIMEOUT_MS, "100");
-    properties.put(AwsProperties.HTTP_CLIENT_APACHE_CONNECTION_TIMEOUT_MS, "200");
-    properties.put(AwsProperties.HTTP_CLIENT_APACHE_CONNECTION_ACQUISITION_TIMEOUT_MS, "101");
-    properties.put(AwsProperties.HTTP_CLIENT_APACHE_CONNECTION_MAX_IDLE_TIME_MS, "102");
-    properties.put(AwsProperties.HTTP_CLIENT_APACHE_CONNECTION_TIME_TO_LIVE_MS, "103");
-    properties.put(AwsProperties.HTTP_CLIENT_APACHE_EXPECT_CONTINUE_ENABLED, "true");
-    properties.put(AwsProperties.HTTP_CLIENT_APACHE_MAX_CONNECTIONS, "104");
-    properties.put(AwsProperties.HTTP_CLIENT_APACHE_TCP_KEEP_ALIVE_ENABLED, "true");
-    properties.put(AwsProperties.HTTP_CLIENT_APACHE_USE_IDLE_CONNECTION_REAPER_ENABLED, "false");
-    AwsProperties awsProperties = new AwsProperties(properties);
+    properties.put(HttpClientProperties.URLCONNECTION_SOCKET_TIMEOUT_MS, "90");
+    properties.put(HttpClientProperties.URLCONNECTION_CONNECTION_TIMEOUT_MS, "80");
+    properties.put(HttpClientProperties.APACHE_SOCKET_TIMEOUT_MS, "100");
+    properties.put(HttpClientProperties.APACHE_CONNECTION_TIMEOUT_MS, "200");
+    properties.put(HttpClientProperties.APACHE_CONNECTION_ACQUISITION_TIMEOUT_MS, "101");
+    properties.put(HttpClientProperties.APACHE_CONNECTION_MAX_IDLE_TIME_MS, "102");
+    properties.put(HttpClientProperties.APACHE_CONNECTION_TIME_TO_LIVE_MS, "103");
+    properties.put(HttpClientProperties.APACHE_EXPECT_CONTINUE_ENABLED, "true");
+    properties.put(HttpClientProperties.APACHE_MAX_CONNECTIONS, "104");
+    properties.put(HttpClientProperties.APACHE_TCP_KEEP_ALIVE_ENABLED, "true");
+    properties.put(HttpClientProperties.APACHE_USE_IDLE_CONNECTION_REAPER_ENABLED, "false");
+    properties.put(HttpClientProperties.PROXY_ENDPOINT, "http://proxy:8080");
     ApacheHttpClientConfigurations apacheHttpClientConfigurations =
-        ApacheHttpClientConfigurations.create(awsProperties.httpClientProperties());
+        ApacheHttpClientConfigurations.create(properties);
     ApacheHttpClient.Builder apacheHttpClientBuilder = ApacheHttpClient.builder();
     ApacheHttpClient.Builder spyApacheHttpClientBuilder = Mockito.spy(apacheHttpClientBuilder);
 
@@ -100,14 +105,14 @@ public class TestHttpClientConfigurations {
     Mockito.verify(spyApacheHttpClientBuilder).maxConnections(104);
     Mockito.verify(spyApacheHttpClientBuilder).tcpKeepAlive(true);
     Mockito.verify(spyApacheHttpClientBuilder).useIdleConnectionReaper(false);
+    Mockito.verify(spyApacheHttpClientBuilder)
+        .proxyConfiguration(Mockito.any(ProxyConfiguration.class));
   }
 
   @Test
   public void testApacheDefaultConfigurations() {
-    Map<String, String> properties = Maps.newHashMap();
-    AwsProperties awsProperties = new AwsProperties(properties);
     ApacheHttpClientConfigurations apacheHttpClientConfigurations =
-        ApacheHttpClientConfigurations.create(awsProperties.httpClientProperties());
+        ApacheHttpClientConfigurations.create(Maps.newHashMap());
     ApacheHttpClient.Builder apacheHttpClientBuilder = ApacheHttpClient.builder();
     ApacheHttpClient.Builder spyApacheHttpClientBuilder = Mockito.spy(apacheHttpClientBuilder);
 
@@ -129,5 +134,7 @@ public class TestHttpClientConfigurations {
     Mockito.verify(spyApacheHttpClientBuilder, Mockito.never()).tcpKeepAlive(Mockito.anyBoolean());
     Mockito.verify(spyApacheHttpClientBuilder, Mockito.never())
         .useIdleConnectionReaper(Mockito.anyBoolean());
+    Mockito.verify(spyApacheHttpClientBuilder, Mockito.never())
+        .proxyConfiguration(Mockito.any(ProxyConfiguration.class));
   }
 }

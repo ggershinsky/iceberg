@@ -19,6 +19,7 @@
 package org.apache.iceberg.arrow.vectorized;
 
 import org.apache.arrow.vector.FieldVector;
+import org.apache.iceberg.MetadataColumns;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
@@ -57,14 +58,19 @@ public class VectorHolder {
     this.icebergField = icebergField;
   }
 
-  // Only used for returning dummy holder
+  /** A constructor used for dummy holders. */
   private VectorHolder() {
+    this(null);
+  }
+
+  /** A constructor used for typed constant holders. */
+  private VectorHolder(Types.NestedField field) {
     columnDescriptor = null;
     vector = null;
     isDictionaryEncoded = false;
     dictionary = null;
     nullabilityHolder = null;
-    icebergField = null;
+    icebergField = field;
   }
 
   private VectorHolder(FieldVector vec, Types.NestedField field, NullabilityHolder nulls) {
@@ -97,7 +103,7 @@ public class VectorHolder {
   }
 
   public Type icebergType() {
-    return icebergField.type();
+    return icebergField != null ? icebergField.type() : null;
   }
 
   public Types.NestedField icebergField() {
@@ -108,8 +114,9 @@ public class VectorHolder {
     return vector.getValueCount();
   }
 
-  public static <T> VectorHolder constantHolder(int numRows, T constantValue) {
-    return new ConstantVectorHolder(numRows, constantValue);
+  public static <T> VectorHolder constantHolder(
+      Types.NestedField icebergField, int numRows, T constantValue) {
+    return new ConstantVectorHolder<>(icebergField, numRows, constantValue);
   }
 
   public static VectorHolder deletedVectorHolder(int numRows) {
@@ -117,7 +124,7 @@ public class VectorHolder {
   }
 
   public static VectorHolder dummyHolder(int numRows) {
-    return new ConstantVectorHolder(numRows);
+    return new ConstantVectorHolder<>(numRows);
   }
 
   public boolean isDummy() {
@@ -137,7 +144,8 @@ public class VectorHolder {
       this.constantValue = null;
     }
 
-    public ConstantVectorHolder(int numRows, T constantValue) {
+    public ConstantVectorHolder(Types.NestedField icebergField, int numRows, T constantValue) {
+      super(icebergField);
       this.numRows = numRows;
       this.constantValue = constantValue;
     }
@@ -163,6 +171,7 @@ public class VectorHolder {
     private final int numRows;
 
     public DeletedVectorHolder(int numRows) {
+      super(MetadataColumns.IS_DELETED);
       this.numRows = numRows;
     }
 

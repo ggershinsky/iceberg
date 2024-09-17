@@ -22,17 +22,16 @@ import static org.apache.iceberg.TableProperties.MANIFEST_MIN_MERGE_COUNT;
 import static org.apache.iceberg.TableProperties.MANIFEST_MIN_MERGE_COUNT_DEFAULT;
 import static org.apache.iceberg.TableProperties.MANIFEST_TARGET_SIZE_BYTES;
 import static org.apache.iceberg.TableProperties.MANIFEST_TARGET_SIZE_BYTES_DEFAULT;
-import static org.apache.iceberg.TableProperties.SNAPSHOT_ID_INHERITANCE_ENABLED;
-import static org.apache.iceberg.TableProperties.SNAPSHOT_ID_INHERITANCE_ENABLED_DEFAULT;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.Arrays;
 import java.util.List;
-import java.util.ListIterator;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
+import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.events.CreateSnapshotEvent;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.exceptions.ValidationException;
@@ -41,10 +40,10 @@ import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.CloseableIterator;
 import org.apache.iceberg.io.InputFile;
-import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.base.Predicate;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterators;
@@ -80,10 +79,11 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
   private final ManifestFilterManager<DataFile> filterManager;
   private final ManifestMergeManager<DeleteFile> deleteMergeManager;
   private final ManifestFilterManager<DeleteFile> deleteFilterManager;
-  private final boolean snapshotIdInheritanceEnabled;
 
   // update data
-  private final List<DataFile> newDataFiles = Lists.newArrayList();
+  private final Map<PartitionSpec, List<DataFile>> newDataFilesBySpec = Maps.newHashMap();
+  private final CharSequenceSet newDataFilePaths = CharSequenceSet.empty();
+  private final CharSequenceSet newDeleteFilePaths = CharSequenceSet.empty();
   private Long newDataFilesDataSequenceNumber;
   private final Map<Integer, List<DeleteFileHolder>> newDeleteFilesBySpec = Maps.newHashMap();
   private final List<ManifestFile> appendManifests = Lists.newArrayList();
@@ -91,10 +91,9 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
   private final SnapshotSummary.Builder addedFilesSummary = SnapshotSummary.builder();
   private final SnapshotSummary.Builder appendedManifestsSummary = SnapshotSummary.builder();
   private Expression deleteExpression = Expressions.alwaysFalse();
-  private PartitionSpec dataSpec;
 
   // cache new data manifests after writing
-  private ManifestFile cachedNewDataManifest = null;
+  private final List<ManifestFile> cachedNewDataManifests = Lists.newLinkedList();
   private boolean hasNewDataFiles = false;
 
   // cache new manifests for delete files
@@ -107,7 +106,6 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     super(ops);
     this.tableName = tableName;
     this.ops = ops;
-    this.dataSpec = null;
     long targetSizeBytes =
         ops.current()
             .propertyAsLong(MANIFEST_TARGET_SIZE_BYTES, MANIFEST_TARGET_SIZE_BYTES_DEFAULT);
@@ -123,10 +121,6 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     this.deleteMergeManager =
         new DeleteFileMergeManager(targetSizeBytes, minCountToMerge, mergeEnabled);
     this.deleteFilterManager = new DeleteFileFilterManager();
-    this.snapshotIdInheritanceEnabled =
-        ops.current()
-            .propertyAsBoolean(
-                SNAPSHOT_ID_INHERITANCE_ENABLED, SNAPSHOT_ID_INHERITANCE_ENABLED_DEFAULT);
   }
 
   @Override
@@ -147,28 +141,31 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
   }
 
   protected PartitionSpec dataSpec() {
+    Set<PartitionSpec> specs = dataSpecs();
     Preconditions.checkState(
-        dataSpec != null, "Cannot determine partition spec: no data files have been added");
-    // the spec is set when the write is started
-    return dataSpec;
+        specs.size() == 1,
+        "Cannot return a single partition spec: data files with different partition specs have been added");
+    return specs.iterator().next();
+  }
+
+  protected Set<PartitionSpec> dataSpecs() {
+    Set<PartitionSpec> specs = newDataFilesBySpec.keySet();
+    Preconditions.checkState(
+        !specs.isEmpty(), "Cannot determine partition specs: no data files have been added");
+    return ImmutableSet.copyOf(specs);
   }
 
   protected Expression rowFilter() {
     return deleteExpression;
   }
 
-  /**
-   * Returns added data files.
-   *
-   * @deprecated since 1.3.0, will be removed in 1.4.0; use {@link #addedDataFiles()}.
-   */
-  @Deprecated
-  protected List<DataFile> addedFiles() {
-    return addedDataFiles();
+  protected List<DataFile> addedDataFiles() {
+    return ImmutableList.copyOf(
+        newDataFilesBySpec.values().stream().flatMap(List::stream).collect(Collectors.toList()));
   }
 
-  protected List<DataFile> addedDataFiles() {
-    return ImmutableList.copyOf(newDataFiles);
+  protected Map<PartitionSpec, List<DataFile>> addedDataFilesBySpec() {
+    return ImmutableMap.copyOf(newDataFilesBySpec);
   }
 
   protected void failAnyDelete() {
@@ -228,20 +225,30 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
   }
 
   protected boolean addsDataFiles() {
-    return newDataFiles.size() > 0;
+    return !newDataFilesBySpec.isEmpty();
   }
 
   protected boolean addsDeleteFiles() {
-    return newDeleteFilesBySpec.size() > 0;
+    return !newDeleteFilesBySpec.isEmpty();
   }
 
   /** Add a data file to the new snapshot. */
   protected void add(DataFile file) {
     Preconditions.checkNotNull(file, "Invalid data file: null");
-    setDataSpec(file);
-    addedFilesSummary.addedFile(dataSpec(), file);
-    hasNewDataFiles = true;
-    newDataFiles.add(file);
+    if (newDataFilePaths.add(file.path())) {
+      PartitionSpec fileSpec = ops.current().spec(file.specId());
+      Preconditions.checkArgument(
+          fileSpec != null,
+          "Cannot find partition spec %s for data file: %s",
+          file.specId(),
+          file.path());
+
+      addedFilesSummary.addedFile(fileSpec, file);
+      hasNewDataFiles = true;
+      List<DataFile> newDataFiles =
+          newDataFilesBySpec.computeIfAbsent(fileSpec, ignored -> Lists.newArrayList());
+      newDataFiles.add(file);
+    }
   }
 
   /** Add a delete file to the new snapshot. */
@@ -261,19 +268,11 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     PartitionSpec fileSpec = ops.current().spec(specId);
     List<DeleteFileHolder> deleteFiles =
         newDeleteFilesBySpec.computeIfAbsent(specId, s -> Lists.newArrayList());
-    deleteFiles.add(fileHolder);
-    addedFilesSummary.addedFile(fileSpec, fileHolder.deleteFile());
-    hasNewDeleteFiles = true;
-  }
 
-  private void setDataSpec(DataFile file) {
-    PartitionSpec fileSpec = ops.current().spec(file.specId());
-    Preconditions.checkNotNull(
-        fileSpec, "Cannot find partition spec for data file: %s", file.path());
-    if (dataSpec == null) {
-      dataSpec = fileSpec;
-    } else if (dataSpec.specId() != file.specId()) {
-      throw new ValidationException("Invalid data file, expected spec id: %d", dataSpec.specId());
+    if (newDeleteFilePaths.add(fileHolder.deleteFile().path())) {
+      deleteFiles.add(fileHolder);
+      addedFilesSummary.addedFile(fileSpec, fileHolder.deleteFile());
+      hasNewDeleteFiles = true;
     }
   }
 
@@ -281,7 +280,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
   protected void add(ManifestFile manifest) {
     Preconditions.checkArgument(
         manifest.content() == ManifestContent.DATA, "Cannot append delete manifest: %s", manifest);
-    if (snapshotIdInheritanceEnabled && manifest.snapshotId() == null) {
+    if (canInheritSnapshotId() && manifest.snapshotId() == null) {
       appendedManifestsSummary.addedManifest(manifest);
       appendManifests.add(manifest);
     } else {
@@ -293,14 +292,14 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
 
   private ManifestFile copyManifest(ManifestFile manifest) {
     TableMetadata current = ops.current();
-    InputFile toCopy = ops.io().newInputFile(manifest.path());
-    OutputFile newManifestPath = newManifestOutput();
+    InputFile toCopy = ops.io().newInputFile(manifest);
+    EncryptedOutputFile newManifestFile = newManifestOutputFile();
     return ManifestFiles.copyAppendManifest(
         current.formatVersion(),
         manifest.partitionSpecId(),
         toCopy,
         current.specsById(),
-        newManifestPath,
+        newManifestFile,
         snapshotId(),
         appendedManifestsSummary);
   }
@@ -688,25 +687,13 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     return manifestGroup.entries();
   }
 
-  /**
-   * Sets a data sequence number for new data files.
-   *
-   * @param sequenceNumber a data sequence number
-   * @deprecated since 1.3.0, will be removed in 1.4.0; use {@link
-   *     #setNewDataFilesDataSequenceNumber(long)};
-   */
-  @Deprecated
-  protected void setNewFilesSequenceNumber(long sequenceNumber) {
-    setNewDataFilesDataSequenceNumber(sequenceNumber);
-  }
-
   protected void setNewDataFilesDataSequenceNumber(long sequenceNumber) {
     this.newDataFilesDataSequenceNumber = sequenceNumber;
   }
 
-  private long startingSequenceNumber(TableMetadata metadata, Long staringSnapshotId) {
-    if (staringSnapshotId != null && metadata.snapshot(staringSnapshotId) != null) {
-      Snapshot startingSnapshot = metadata.snapshot(staringSnapshotId);
+  private long startingSequenceNumber(TableMetadata metadata, Long startingSnapshotId) {
+    if (startingSnapshotId != null && metadata.snapshot(startingSnapshotId) != null) {
+      Snapshot startingSnapshot = metadata.snapshot(startingSnapshotId);
       return startingSnapshot.sequenceNumber();
     } else {
       return TableMetadata.INITIAL_SEQUENCE_NUMBER;
@@ -906,19 +893,32 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
     return new CreateSnapshotEvent(tableName, operation(), snapshotId, sequenceNumber, summary);
   }
 
+  @SuppressWarnings("checkstyle:CyclomaticComplexity")
   private void cleanUncommittedAppends(Set<ManifestFile> committed) {
-    if (cachedNewDataManifest != null && !committed.contains(cachedNewDataManifest)) {
-      deleteFile(cachedNewDataManifest.path());
-      this.cachedNewDataManifest = null;
+    if (!cachedNewDataManifests.isEmpty()) {
+      boolean hasDeletes = false;
+      for (ManifestFile manifest : cachedNewDataManifests) {
+        if (!committed.contains(manifest)) {
+          deleteFile(manifest.path());
+          hasDeletes = true;
+        }
+      }
+
+      if (hasDeletes) {
+        this.cachedNewDataManifests.clear();
+      }
     }
 
-    ListIterator<ManifestFile> deleteManifestsIterator = cachedNewDeleteManifests.listIterator();
-    while (deleteManifestsIterator.hasNext()) {
-      ManifestFile deleteManifest = deleteManifestsIterator.next();
-      if (!committed.contains(deleteManifest)) {
-        deleteFile(deleteManifest.path());
-        deleteManifestsIterator.remove();
+    boolean hasDeleteDeletes = false;
+    for (ManifestFile cachedNewDeleteManifest : cachedNewDeleteManifests) {
+      if (!committed.contains(cachedNewDeleteManifest)) {
+        deleteFile(cachedNewDeleteManifest.path());
+        hasDeleteDeletes = true;
       }
+    }
+
+    if (hasDeleteDeletes) {
+      this.cachedNewDeleteManifests.clear();
     }
 
     // rewritten manifests are always owned by the table
@@ -951,11 +951,9 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
 
   private Iterable<ManifestFile> prepareNewDataManifests() {
     Iterable<ManifestFile> newManifests;
-    if (newDataFiles.size() > 0) {
-      ManifestFile newManifest = newDataFilesAsManifest();
-      newManifests =
-          Iterables.concat(
-              ImmutableList.of(newManifest), appendManifests, rewrittenAppendManifests);
+    if (!newDataFilesBySpec.isEmpty()) {
+      List<ManifestFile> dataFileManifests = newDataFilesAsManifests();
+      newManifests = Iterables.concat(dataFileManifests, appendManifests, rewrittenAppendManifests);
     } else {
       newManifests = Iterables.concat(appendManifests, rewrittenAppendManifests);
     }
@@ -965,33 +963,35 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
         manifest -> GenericManifestFile.copyOf(manifest).withSnapshotId(snapshotId()).build());
   }
 
-  private ManifestFile newDataFilesAsManifest() {
-    if (hasNewDataFiles && cachedNewDataManifest != null) {
-      deleteFile(cachedNewDataManifest.path());
-      cachedNewDataManifest = null;
+  private List<ManifestFile> newDataFilesAsManifests() {
+    if (hasNewDataFiles && !cachedNewDataManifests.isEmpty()) {
+      cachedNewDataManifests.forEach(file -> deleteFile(file.path()));
+      cachedNewDataManifests.clear();
     }
 
-    if (cachedNewDataManifest == null) {
-      try {
-        ManifestWriter<DataFile> writer = newManifestWriter(dataSpec());
-        try {
-          if (newDataFilesDataSequenceNumber == null) {
-            writer.addAll(newDataFiles);
-          } else {
-            newDataFiles.forEach(f -> writer.add(f, newDataFilesDataSequenceNumber));
-          }
-        } finally {
-          writer.close();
-        }
-
-        this.cachedNewDataManifest = writer.toManifestFile();
-        this.hasNewDataFiles = false;
-      } catch (IOException e) {
-        throw new RuntimeIOException(e, "Failed to close manifest writer");
-      }
+    if (cachedNewDataManifests.isEmpty()) {
+      newDataFilesBySpec.forEach(
+          (dataSpec, newDataFiles) -> {
+            try {
+              RollingManifestWriter<DataFile> writer = newRollingManifestWriter(dataSpec);
+              try {
+                if (newDataFilesDataSequenceNumber == null) {
+                  newDataFiles.forEach(writer::add);
+                } else {
+                  newDataFiles.forEach(f -> writer.add(f, newDataFilesDataSequenceNumber));
+                }
+              } finally {
+                writer.close();
+              }
+              this.cachedNewDataManifests.addAll(writer.toManifestFiles());
+            } catch (IOException e) {
+              throw new RuntimeIOException(e, "Failed to close manifest writer");
+            }
+          });
+      this.hasNewDataFiles = false;
     }
 
-    return cachedNewDataManifest;
+    return cachedNewDataManifests;
   }
 
   private Iterable<ManifestFile> prepareDeleteManifests() {
@@ -1003,7 +1003,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
   }
 
   private List<ManifestFile> newDeleteFilesAsManifests() {
-    if (hasNewDeleteFiles && cachedNewDeleteManifests.size() > 0) {
+    if (hasNewDeleteFiles && !cachedNewDeleteManifests.isEmpty()) {
       for (ManifestFile cachedNewDeleteManifest : cachedNewDeleteManifests) {
         deleteFile(cachedNewDeleteManifest.path());
       }
@@ -1017,7 +1017,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
           (specId, deleteFiles) -> {
             PartitionSpec spec = ops.current().spec(specId);
             try {
-              ManifestWriter<DeleteFile> writer = newDeleteManifestWriter(spec);
+              RollingManifestWriter<DeleteFile> writer = newRollingDeleteManifestWriter(spec);
               try {
                 deleteFiles.forEach(
                     df -> {
@@ -1030,7 +1030,7 @@ abstract class MergingSnapshotProducer<ThisT> extends SnapshotProducer<ThisT> {
               } finally {
                 writer.close();
               }
-              cachedNewDeleteManifests.add(writer.toManifestFile());
+              cachedNewDeleteManifests.addAll(writer.toManifestFiles());
             } catch (IOException e) {
               throw new RuntimeIOException(e, "Failed to close manifest writer");
             }

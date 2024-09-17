@@ -18,11 +18,11 @@
  */
 package org.apache.iceberg.arrow.vectorized.parquet;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigInteger;
-import org.assertj.core.api.Assertions;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class DecimalVectorUtilTest {
 
@@ -32,9 +32,9 @@ public class DecimalVectorUtilTest {
     byte[] bytes = bigInt.toByteArray();
     byte[] paddedBytes = DecimalVectorUtil.padBigEndianBytes(bytes, 16);
 
-    assertEquals(16, paddedBytes.length);
+    assertThat(paddedBytes).hasSize(16);
     BigInteger result = new BigInteger(paddedBytes);
-    assertEquals(bigInt, result);
+    assertThat(result).isEqualTo(bigInt);
   }
 
   @Test
@@ -43,9 +43,9 @@ public class DecimalVectorUtilTest {
     byte[] bytes = bigInt.toByteArray();
     byte[] paddedBytes = DecimalVectorUtil.padBigEndianBytes(bytes, 16);
 
-    assertEquals(16, paddedBytes.length);
+    assertThat(paddedBytes).hasSize(16);
     BigInteger result = new BigInteger(paddedBytes);
-    assertEquals(bigInt, result);
+    assertThat(result).isEqualTo(bigInt);
   }
 
   @Test
@@ -53,22 +53,22 @@ public class DecimalVectorUtilTest {
     byte[] bytes = BigInteger.ZERO.toByteArray();
     byte[] paddedBytes = DecimalVectorUtil.padBigEndianBytes(bytes, 16);
 
-    assertEquals(16, paddedBytes.length);
+    assertThat(paddedBytes).hasSize(16);
     BigInteger result = new BigInteger(paddedBytes);
-    assertEquals(BigInteger.ZERO, result);
+    assertThat(result).isEqualTo(BigInteger.ZERO);
 
     bytes = new byte[0];
     paddedBytes = DecimalVectorUtil.padBigEndianBytes(bytes, 16);
 
-    assertEquals(16, paddedBytes.length);
+    assertThat(paddedBytes).hasSize(16);
     result = new BigInteger(paddedBytes);
-    assertEquals(BigInteger.ZERO, result);
+    assertThat(result).isEqualTo(BigInteger.ZERO);
   }
 
   @Test
   public void testPadBigEndianBytesOverflow() {
     byte[] bytes = new byte[17];
-    Assertions.assertThatThrownBy(() -> DecimalVectorUtil.padBigEndianBytes(bytes, 16))
+    assertThatThrownBy(() -> DecimalVectorUtil.padBigEndianBytes(bytes, 16))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Buffer size of 17 is larger than requested size of 16");
   }

@@ -89,6 +89,26 @@ public class DataFiles {
     return data;
   }
 
+  static PartitionData fillFromValues(
+      PartitionSpec spec, List<String> partitionValues, PartitionData reuse) {
+    PartitionData data = reuse;
+    if (data == null) {
+      data = newPartitionData(spec);
+    }
+
+    Preconditions.checkArgument(
+        partitionValues.size() == spec.fields().size(),
+        "Invalid partition data, expecting %s fields, found %s",
+        spec.fields().size(),
+        partitionValues.size());
+
+    for (int i = 0; i < partitionValues.size(); i += 1) {
+      data.set(i, Conversions.fromPartitionString(data.getType(i), partitionValues.get(i)));
+    }
+
+    return data;
+  }
+
   public static PartitionData data(PartitionSpec spec, String partitionPath) {
     return fillFromPath(spec, partitionPath, null);
   }
@@ -123,7 +143,6 @@ public class DataFiles {
     private FileFormat format = null;
     private long recordCount = -1L;
     private long fileSizeInBytes = -1L;
-    private Integer sortOrderId = SortOrder.unsorted().orderId();
 
     // optional fields
     private Map<Integer, Long> columnSizes = null;
@@ -134,6 +153,7 @@ public class DataFiles {
     private Map<Integer, ByteBuffer> upperBounds = null;
     private ByteBuffer keyMetadata = null;
     private List<Long> splitOffsets = null;
+    private Integer sortOrderId = SortOrder.unsorted().orderId();
 
     public Builder(PartitionSpec spec) {
       this.spec = spec;
@@ -244,6 +264,16 @@ public class DataFiles {
           "Cannot add partition data for an unpartitioned table");
       if (!newPartitionPath.isEmpty()) {
         this.partitionData = fillFromPath(spec, newPartitionPath, partitionData);
+      }
+      return this;
+    }
+
+    public Builder withPartitionValues(List<String> partitionValues) {
+      Preconditions.checkArgument(
+          isPartitioned ^ partitionValues.isEmpty(),
+          "Table must be partitioned or partition values must be empty");
+      if (!partitionValues.isEmpty()) {
+        this.partitionData = fillFromValues(spec, partitionValues, partitionData);
       }
       return this;
     }

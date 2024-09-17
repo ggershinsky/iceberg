@@ -21,11 +21,14 @@ package org.apache.iceberg.spark.procedures;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Predicate;
 import org.apache.iceberg.MetadataColumns;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.spark.ChangelogIterator;
 import org.apache.iceberg.spark.source.SparkChangelogTable;
 import org.apache.spark.api.java.function.MapPartitionsFunction;
@@ -46,8 +49,8 @@ import org.apache.spark.unsafe.types.UTF8String;
 /**
  * A procedure that creates a view for changed rows.
  *
- * <p>The procedure removes the carry-over rows by default. If you want to keep them, you can set
- * "remove_carryovers" to be false in the options.
+ * <p>The procedure always removes the carry-over rows. Please query {@link SparkChangelogTable}
+ * instead when carry-over rows are required.
  *
  * <p>The procedure doesn't compute the pre/post update images by default. If you want to compute
  * them, you can set "compute_updates" to be true in the options.
@@ -88,10 +91,10 @@ public class CreateChangelogViewProcedure extends BaseProcedure {
       ProcedureParameter.optional("options", STRING_MAP);
   private static final ProcedureParameter COMPUTE_UPDATES_PARAM =
       ProcedureParameter.optional("compute_updates", DataTypes.BooleanType);
-  private static final ProcedureParameter REMOVE_CARRYOVERS_PARAM =
-      ProcedureParameter.optional("remove_carryovers", DataTypes.BooleanType);
   private static final ProcedureParameter IDENTIFIER_COLUMNS_PARAM =
       ProcedureParameter.optional("identifier_columns", STRING_ARRAY);
+  private static final ProcedureParameter NET_CHANGES =
+      ProcedureParameter.optional("net_changes", DataTypes.BooleanType);
 
   private static final ProcedureParameter[] PARAMETERS =
       new ProcedureParameter[] {
@@ -99,8 +102,8 @@ public class CreateChangelogViewProcedure extends BaseProcedure {
         CHANGELOG_VIEW_PARAM,
         OPTIONS_PARAM,
         COMPUTE_UPDATES_PARAM,
-        REMOVE_CARRYOVERS_PARAM,
         IDENTIFIER_COLUMNS_PARAM,
+        NET_CHANGES,
       };
 
   private static final StructType OUTPUT_TYPE =
@@ -142,10 +145,13 @@ public class CreateChangelogViewProcedure extends BaseProcedure {
     Identifier changelogTableIdent = changelogTableIdent(tableIdent);
     Dataset<Row> df = loadRows(changelogTableIdent, options(input));
 
+    boolean netChanges = input.asBoolean(NET_CHANGES, false);
+
     if (shouldComputeUpdateImages(input)) {
+      Preconditions.checkArgument(!netChanges, "Not support net changes with update images");
       df = computeUpdateImages(identifierColumns(input, tableIdent), df);
-    } else if (shouldRemoveCarryoverRows(input)) {
-      df = removeCarryoverRows(df);
+    } else {
+      df = removeCarryoverRows(df, netChanges);
     }
 
     String viewName = viewName(input, tableIdent.name());
@@ -164,6 +170,7 @@ public class CreateChangelogViewProcedure extends BaseProcedure {
     for (int i = 0; i < identifierColumns.length; i++) {
       repartitionSpec[i] = df.col(identifierColumns[i]);
     }
+
     repartitionSpec[repartitionSpec.length - 1] = df.col(MetadataColumns.CHANGE_ORDINAL.name());
 
     return applyChangelogIterator(df, repartitionSpec);
@@ -175,17 +182,23 @@ public class CreateChangelogViewProcedure extends BaseProcedure {
     return input.asBoolean(COMPUTE_UPDATES_PARAM, defaultValue);
   }
 
-  private boolean shouldRemoveCarryoverRows(ProcedureInput input) {
-    return input.asBoolean(REMOVE_CARRYOVERS_PARAM, true);
-  }
+  private Dataset<Row> removeCarryoverRows(Dataset<Row> df, boolean netChanges) {
+    Predicate<String> columnsToKeep;
+    if (netChanges) {
+      Set<String> metadataColumn =
+          Sets.newHashSet(
+              MetadataColumns.CHANGE_TYPE.name(),
+              MetadataColumns.CHANGE_ORDINAL.name(),
+              MetadataColumns.COMMIT_SNAPSHOT_ID.name());
 
-  private Dataset<Row> removeCarryoverRows(Dataset<Row> df) {
+      columnsToKeep = column -> !metadataColumn.contains(column);
+    } else {
+      columnsToKeep = column -> !column.equals(MetadataColumns.CHANGE_TYPE.name());
+    }
+
     Column[] repartitionSpec =
-        Arrays.stream(df.columns())
-            .filter(c -> !c.equals(MetadataColumns.CHANGE_TYPE.name()))
-            .map(df::col)
-            .toArray(Column[]::new);
-    return applyCarryoverRemoveIterator(df, repartitionSpec);
+        Arrays.stream(df.columns()).filter(columnsToKeep).map(df::col).toArray(Column[]::new);
+    return applyCarryoverRemoveIterator(df, repartitionSpec, netChanges);
   }
 
   private String[] identifierColumns(ProcedureInput input, Identifier tableIdent) {
@@ -214,7 +227,7 @@ public class CreateChangelogViewProcedure extends BaseProcedure {
   }
 
   private Dataset<Row> applyChangelogIterator(Dataset<Row> df, Column[] repartitionSpec) {
-    Column[] sortSpec = sortSpec(df, repartitionSpec);
+    Column[] sortSpec = sortSpec(df, repartitionSpec, false);
     StructType schema = df.schema();
     String[] identifierFields =
         Arrays.stream(repartitionSpec).map(Column::toString).toArray(String[]::new);
@@ -228,22 +241,33 @@ public class CreateChangelogViewProcedure extends BaseProcedure {
             RowEncoder.apply(schema));
   }
 
-  private Dataset<Row> applyCarryoverRemoveIterator(Dataset<Row> df, Column[] repartitionSpec) {
-    Column[] sortSpec = sortSpec(df, repartitionSpec);
+  private Dataset<Row> applyCarryoverRemoveIterator(
+      Dataset<Row> df, Column[] repartitionSpec, boolean netChanges) {
+    Column[] sortSpec = sortSpec(df, repartitionSpec, netChanges);
     StructType schema = df.schema();
 
     return df.repartition(repartitionSpec)
         .sortWithinPartitions(sortSpec)
         .mapPartitions(
             (MapPartitionsFunction<Row, Row>)
-                rowIterator -> ChangelogIterator.removeCarryovers(rowIterator, schema),
+                rowIterator ->
+                    netChanges
+                        ? ChangelogIterator.removeNetCarryovers(rowIterator, schema)
+                        : ChangelogIterator.removeCarryovers(rowIterator, schema),
             RowEncoder.apply(schema));
   }
 
-  private static Column[] sortSpec(Dataset<Row> df, Column[] repartitionSpec) {
-    Column[] sortSpec = new Column[repartitionSpec.length + 1];
+  private static Column[] sortSpec(Dataset<Row> df, Column[] repartitionSpec, boolean netChanges) {
+    Column changeType = df.col(MetadataColumns.CHANGE_TYPE.name());
+    Column changeOrdinal = df.col(MetadataColumns.CHANGE_ORDINAL.name());
+    Column[] extraColumns =
+        netChanges ? new Column[] {changeOrdinal, changeType} : new Column[] {changeType};
+
+    Column[] sortSpec = new Column[repartitionSpec.length + extraColumns.length];
+
     System.arraycopy(repartitionSpec, 0, sortSpec, 0, repartitionSpec.length);
-    sortSpec[sortSpec.length - 1] = df.col(MetadataColumns.CHANGE_TYPE.name());
+    System.arraycopy(extraColumns, 0, sortSpec, repartitionSpec.length, extraColumns.length);
+
     return sortSpec;
   }
 

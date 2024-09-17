@@ -20,8 +20,10 @@ package org.apache.iceberg.aws.s3;
 
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -33,12 +35,11 @@ import org.apache.iceberg.aws.S3FileIOAwsClientFactories;
 import org.apache.iceberg.common.DynConstructors;
 import org.apache.iceberg.io.BulkDeletionFailureException;
 import org.apache.iceberg.io.CredentialSupplier;
-import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.DelegateFileIO;
 import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
-import org.apache.iceberg.io.SupportsBulkOperations;
-import org.apache.iceberg.io.SupportsPrefixOperations;
+import org.apache.iceberg.io.SupportsRecoveryOperations;
 import org.apache.iceberg.metrics.MetricsContext;
 import org.apache.iceberg.relocated.com.google.common.base.Joiner;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -54,6 +55,7 @@ import org.apache.iceberg.util.Tasks;
 import org.apache.iceberg.util.ThreadPools;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import software.amazon.awssdk.core.exception.SdkException;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.Delete;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
@@ -63,10 +65,12 @@ import software.amazon.awssdk.services.s3.model.GetObjectTaggingRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectTaggingResponse;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
+import software.amazon.awssdk.services.s3.model.ObjectVersion;
 import software.amazon.awssdk.services.s3.model.PutObjectTaggingRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.Tag;
 import software.amazon.awssdk.services.s3.model.Tagging;
+import software.amazon.awssdk.services.s3.paginators.ListObjectVersionsIterable;
 
 /**
  * FileIO implementation backed by S3.
@@ -75,8 +79,7 @@ import software.amazon.awssdk.services.s3.model.Tagging;
  * schemes s3a, s3n, https are also treated as s3 file paths. Using this FileIO with other schemes
  * will result in {@link org.apache.iceberg.exceptions.ValidationException}.
  */
-public class S3FileIO
-    implements FileIO, SupportsBulkOperations, SupportsPrefixOperations, CredentialSupplier {
+public class S3FileIO implements CredentialSupplier, DelegateFileIO, SupportsRecoveryOperations {
   private static final Logger LOG = LoggerFactory.getLogger(S3FileIO.class);
   private static final String DEFAULT_METRICS_IMPL =
       "org.apache.iceberg.hadoop.HadoopMetricsContext";
@@ -323,7 +326,7 @@ public class S3FileIO
     deleteFiles(() -> Streams.stream(listPrefix(prefix)).map(FileInfo::location).iterator());
   }
 
-  private S3Client client() {
+  public S3Client client() {
     if (client == null) {
       synchronized (this) {
         if (client == null) {
@@ -379,21 +382,23 @@ public class S3FileIO
       }
     }
 
+    initMetrics(properties);
+  }
+
+  @SuppressWarnings("CatchBlockLogException")
+  private void initMetrics(Map<String, String> props) {
     // Report Hadoop metrics if Hadoop is available
     try {
       DynConstructors.Ctor<MetricsContext> ctor =
           DynConstructors.builder(MetricsContext.class)
-              .loader(S3FileIO.class.getClassLoader())
               .hiddenImpl(DEFAULT_METRICS_IMPL, String.class)
               .buildChecked();
       MetricsContext context = ctor.newInstance("s3");
-      context.initialize(properties);
+      context.initialize(props);
       this.metrics = context;
     } catch (NoClassDefFoundError | NoSuchMethodException | ClassCastException e) {
       LOG.warn(
-          "Unable to load metrics class: '{}', falling back to null metrics",
-          DEFAULT_METRICS_IMPL,
-          e);
+          "Unable to load metrics class: '{}', falling back to null metrics", DEFAULT_METRICS_IMPL);
     }
   }
 
@@ -407,7 +412,7 @@ public class S3FileIO
     }
   }
 
-  @SuppressWarnings("checkstyle:NoFinalizer")
+  @SuppressWarnings({"checkstyle:NoFinalizer", "Finalize"})
   @Override
   protected void finalize() throws Throwable {
     super.finalize();
@@ -420,5 +425,47 @@ public class S3FileIO
         LOG.warn("Unclosed S3FileIO instance created by:\n\t{}", trace);
       }
     }
+  }
+
+  @Override
+  public boolean recoverFile(String path) {
+    S3URI location = new S3URI(path, s3FileIOProperties.bucketToAccessPointMapping());
+    ListObjectVersionsIterable response =
+        client()
+            .listObjectVersionsPaginator(
+                builder -> builder.bucket(location.bucket()).prefix(location.key()));
+
+    // Recover to the last modified version, not isLatest,
+    // since isLatest is true for deletion markers.
+    Optional<ObjectVersion> recoverVersion =
+        response.versions().stream().max(Comparator.comparing(ObjectVersion::lastModified));
+
+    return recoverVersion.map(version -> recoverObject(version, location.bucket())).orElse(false);
+  }
+
+  private boolean recoverObject(ObjectVersion version, String bucket) {
+    if (version.isLatest()) {
+      return true;
+    }
+
+    LOG.info("Attempting to recover object {}", version.key());
+    try {
+      // Perform a copy instead of deleting the delete marker
+      // so that recovery does not rely on delete permissions
+      client()
+          .copyObject(
+              builder ->
+                  builder
+                      .sourceBucket(bucket)
+                      .sourceKey(version.key())
+                      .sourceVersionId(version.versionId())
+                      .destinationBucket(bucket)
+                      .destinationKey(version.key()));
+    } catch (SdkException e) {
+      LOG.warn("Failed to recover object {}", version.key(), e);
+      return false;
+    }
+
+    return true;
   }
 }

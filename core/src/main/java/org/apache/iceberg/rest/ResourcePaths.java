@@ -71,6 +71,10 @@ public class ResourcePaths {
         RESTUtil.encodeString(ident.name()));
   }
 
+  public String register(Namespace ns) {
+    return SLASH.join("v1", prefix, "namespaces", RESTUtil.encodeNamespace(ns), "register");
+  }
+
   public String rename() {
     return SLASH.join("v1", prefix, "tables", "rename");
   }
@@ -88,5 +92,23 @@ public class ResourcePaths {
 
   public String commitTransaction() {
     return SLASH.join("v1", prefix, "transactions", "commit");
+  }
+
+  public String views(Namespace ns) {
+    return SLASH.join("v1", prefix, "namespaces", RESTUtil.encodeNamespace(ns), "views");
+  }
+
+  public String view(TableIdentifier ident) {
+    return SLASH.join(
+        "v1",
+        prefix,
+        "namespaces",
+        RESTUtil.encodeNamespace(ident.namespace()),
+        "views",
+        RESTUtil.encodeString(ident.name()));
+  }
+
+  public String renameView() {
+    return SLASH.join("v1", prefix, "views", "rename");
   }
 }

@@ -19,10 +19,12 @@
 package org.apache.iceberg.util;
 
 import java.lang.reflect.Array;
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
+import org.apache.iceberg.relocated.com.google.common.primitives.Longs;
 
 public class ArrayUtil {
   private ArrayUtil() {}
@@ -59,6 +61,14 @@ public class ArrayUtil {
     }
   }
 
+  public static List<Long> toUnmodifiableLongList(long[] longs) {
+    if (longs != null) {
+      return Collections.unmodifiableList(Longs.asList(longs));
+    } else {
+      return null;
+    }
+  }
+
   public static long[] toLongArray(List<Long> longs) {
     if (longs != null) {
       return longs.stream().mapToLong(v -> v).toArray();
@@ -86,7 +96,7 @@ public class ArrayUtil {
     }
     final boolean[] result = new boolean[array.length];
     for (int i = 0; i < array.length; i++) {
-      result[i] = array[i].booleanValue();
+      result[i] = array[i];
     }
     return result;
   }
@@ -110,7 +120,7 @@ public class ArrayUtil {
     }
     final byte[] result = new byte[array.length];
     for (int i = 0; i < array.length; i++) {
-      result[i] = array[i].byteValue();
+      result[i] = array[i];
     }
     return result;
   }
@@ -134,7 +144,7 @@ public class ArrayUtil {
     }
     final short[] result = new short[array.length];
     for (int i = 0; i < array.length; i++) {
-      result[i] = array[i].shortValue();
+      result[i] = array[i];
     }
     return result;
   }
@@ -158,7 +168,7 @@ public class ArrayUtil {
     }
     final int[] result = new int[array.length];
     for (int i = 0; i < array.length; i++) {
-      result[i] = array[i].intValue();
+      result[i] = array[i];
     }
     return result;
   }
@@ -182,7 +192,7 @@ public class ArrayUtil {
     }
     final long[] result = new long[array.length];
     for (int i = 0; i < array.length; i++) {
-      result[i] = array[i].longValue();
+      result[i] = array[i];
     }
     return result;
   }
@@ -206,7 +216,7 @@ public class ArrayUtil {
     }
     final float[] result = new float[array.length];
     for (int i = 0; i < array.length; i++) {
-      result[i] = array[i].floatValue();
+      result[i] = array[i];
     }
     return result;
   }
@@ -230,7 +240,7 @@ public class ArrayUtil {
     }
     final double[] result = new double[array.length];
     for (int i = 0; i < array.length; i++) {
-      result[i] = array[i].doubleValue();
+      result[i] = array[i];
     }
     return result;
   }
@@ -299,5 +309,42 @@ public class ArrayUtil {
       return newArray;
     }
     return Array.newInstance(newArrayComponentType, 1);
+  }
+
+  public static boolean isStrictlyAscending(long[] array) {
+    for (int index = 1; index < array.length; index++) {
+      if (array[index] <= array[index - 1]) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  @SuppressWarnings("unchecked")
+  public static <T> T[] concat(Class<T> type, T[]... arrays) {
+    T[] result = (T[]) Array.newInstance(type, totalLength(arrays));
+
+    int currentLength = 0;
+
+    for (T[] array : arrays) {
+      int length = array.length;
+      if (length > 0) {
+        System.arraycopy(array, 0, result, currentLength, length);
+        currentLength += length;
+      }
+    }
+
+    return result;
+  }
+
+  private static int totalLength(Object[][] arrays) {
+    int totalLength = 0;
+
+    for (Object[] array : arrays) {
+      totalLength += array.length;
+    }
+
+    return totalLength;
   }
 }

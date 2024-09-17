@@ -18,9 +18,10 @@
  */
 package org.apache.iceberg.spark.extensions;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 import java.util.List;
 import java.util.Map;
-import org.apache.iceberg.AssertHelpers;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.spark.sql.AnalysisException;
@@ -147,22 +148,16 @@ public class TestAncestorsOfProcedure extends SparkExtensionsTestBase {
 
   @Test
   public void testInvalidAncestorOfCases() {
-    AssertHelpers.assertThrows(
-        "Should reject calls without all required args",
-        AnalysisException.class,
-        "Missing required parameters",
-        () -> sql("CALL %s.system.ancestors_of()", catalogName));
+    assertThatThrownBy(() -> sql("CALL %s.system.ancestors_of()", catalogName))
+        .isInstanceOf(AnalysisException.class)
+        .hasMessage("Missing required parameters: [table]");
 
-    AssertHelpers.assertThrows(
-        "Should reject calls with empty table identifier",
-        IllegalArgumentException.class,
-        "Cannot handle an empty identifier for parameter 'table'",
-        () -> sql("CALL %s.system.ancestors_of('')", catalogName));
+    assertThatThrownBy(() -> sql("CALL %s.system.ancestors_of('')", catalogName))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("Cannot handle an empty identifier for parameter 'table'");
 
-    AssertHelpers.assertThrows(
-        "Should reject calls with invalid arg types",
-        AnalysisException.class,
-        "Wrong arg type for snapshot_id: cannot cast",
-        () -> sql("CALL %s.system.ancestors_of('%s', 1.1)", catalogName, tableIdent));
+    assertThatThrownBy(() -> sql("CALL %s.system.ancestors_of('%s', 1.1)", catalogName, tableIdent))
+        .isInstanceOf(AnalysisException.class)
+        .hasMessageStartingWith("Wrong arg type for snapshot_id: cannot cast");
   }
 }

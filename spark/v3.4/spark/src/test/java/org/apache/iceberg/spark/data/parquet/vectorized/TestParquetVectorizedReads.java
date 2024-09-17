@@ -20,6 +20,7 @@ package org.apache.iceberg.spark.data.parquet.vectorized;
 
 import static org.apache.iceberg.types.Types.NestedField.optional;
 import static org.apache.iceberg.types.Types.NestedField.required;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.File;
 import java.io.IOException;
@@ -46,7 +47,6 @@ import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.Type;
 import org.apache.spark.sql.vectorized.ColumnarBatch;
-import org.assertj.core.api.Assertions;
 import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Ignore;
@@ -60,15 +60,7 @@ public class TestParquetVectorizedReads extends AvroDataTest {
 
   @Override
   protected void writeAndValidate(Schema schema) throws IOException {
-    try {
-      writeAndValidate(schema, getNumRows(), 0L, RandomData.DEFAULT_NULL_PERCENTAGE, true);
-    } catch (UnsupportedOperationException exc) {
-      // Fixed in https://github.com/apache/spark/pull/41103
-      // Can be removed once Spark 3.4.1 is released
-      if (!exc.getMessage().equals("Datatype not supported TimestampNTZType")) {
-        throw exc;
-      }
-    }
+    writeAndValidate(schema, getNumRows(), 0L, RandomData.DEFAULT_NULL_PERCENTAGE, true);
   }
 
   private void writeAndValidate(
@@ -207,7 +199,7 @@ public class TestParquetVectorizedReads extends AvroDataTest {
   @Test
   @Override
   public void testNestedStruct() {
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 VectorizedSparkParquetReaders.buildReader(
                     TypeUtil.assignIncreasingFreshIds(
@@ -333,8 +325,7 @@ public class TestParquetVectorizedReads extends AvroDataTest {
     try (FileAppender<GenericData.Record> writer = getParquetV2Writer(schema, dataFile)) {
       writer.addAll(data);
     }
-    Assertions.assertThatThrownBy(
-            () -> assertRecordsMatch(schema, 30000, data, dataFile, false, BATCH_SIZE))
+    assertThatThrownBy(() -> assertRecordsMatch(schema, 30000, data, dataFile, false, BATCH_SIZE))
         .isInstanceOf(UnsupportedOperationException.class)
         .hasMessageStartingWith("Cannot support vectorized reads for column")
         .hasMessageEndingWith("Disable vectorized reads to read this table/file");

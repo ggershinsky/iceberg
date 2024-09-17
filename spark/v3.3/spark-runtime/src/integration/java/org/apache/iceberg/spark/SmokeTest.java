@@ -101,7 +101,7 @@ public class SmokeTest extends SparkExtensionsTestBase {
     sql(
         "CREATE TABLE %s (category int, id bigint, data string, ts timestamp) USING iceberg",
         tableName);
-    Table table = getTable();
+    Table table;
     // Add examples
     sql("ALTER TABLE %s ADD PARTITION FIELD bucket(16, id)", tableName);
     sql("ALTER TABLE %s ADD PARTITION FIELD truncate(data, 4)", tableName);
@@ -117,11 +117,7 @@ public class SmokeTest extends SparkExtensionsTestBase {
     sql("ALTER TABLE %s DROP PARTITION FIELD shard", tableName);
 
     table = getTable();
-    Assert.assertEquals("Table should have 4 partition fields", 4, table.spec().fields().size());
-    // VoidTransform is package private so we can't reach it here, just checking name
-    Assert.assertTrue(
-        "All transforms should be void",
-        table.spec().fields().stream().allMatch(pf -> pf.transform().toString().equals("void")));
+    Assert.assertTrue("Table should be unpartitioned", table.spec().isUnpartitioned());
 
     // Sort order examples
     sql("ALTER TABLE %s WRITE ORDERED BY category, id", tableName);

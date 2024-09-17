@@ -18,8 +18,8 @@
  */
 package org.apache.iceberg.hadoop;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.File;
 import java.io.IOException;
@@ -33,12 +33,13 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.iceberg.TestHelpers;
+import org.apache.iceberg.common.DynMethods;
 import org.apache.iceberg.io.BulkDeletionFailureException;
 import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.ResolvingFileIO;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Streams;
-import org.junit.Assert;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -65,34 +66,32 @@ public class HadoopFileIOTest {
 
     List<Integer> scaleSizes = Lists.newArrayList(1, 1000, 2500);
 
-    scaleSizes
-        .parallelStream()
+    scaleSizes.parallelStream()
         .forEach(
             scale -> {
               Path scalePath = new Path(parent, Integer.toString(scale));
 
               createRandomFiles(scalePath, scale);
-              assertEquals(
-                  (long) scale,
-                  Streams.stream(hadoopFileIO.listPrefix(scalePath.toUri().toString())).count());
+              assertThat(
+                      Streams.stream(hadoopFileIO.listPrefix(scalePath.toUri().toString())).count())
+                  .isEqualTo((long) scale);
             });
 
     long totalFiles = scaleSizes.stream().mapToLong(Integer::longValue).sum();
-    assertEquals(
-        totalFiles, Streams.stream(hadoopFileIO.listPrefix(parent.toUri().toString())).count());
+    assertThat(Streams.stream(hadoopFileIO.listPrefix(parent.toUri().toString())).count())
+        .isEqualTo(totalFiles);
   }
 
   @Test
   public void testFileExists() throws IOException {
     Path parent = new Path(tempDir.toURI());
-    Path randomFilePath = new Path(parent, "random-file-" + UUID.randomUUID().toString());
+    Path randomFilePath = new Path(parent, "random-file-" + UUID.randomUUID());
     fs.createNewFile(randomFilePath);
 
     // check existence of the created file
-    Assert.assertTrue(hadoopFileIO.newInputFile(randomFilePath.toUri().toString()).exists());
-
+    assertThat(hadoopFileIO.newInputFile(randomFilePath.toUri().toString()).exists()).isTrue();
     fs.delete(randomFilePath, false);
-    Assert.assertFalse(hadoopFileIO.newInputFile(randomFilePath.toUri().toString()).exists());
+    assertThat(hadoopFileIO.newInputFile(randomFilePath.toUri().toString()).exists()).isFalse();
   }
 
   @Test
@@ -101,8 +100,7 @@ public class HadoopFileIOTest {
 
     List<Integer> scaleSizes = Lists.newArrayList(1, 1000, 2500);
 
-    scaleSizes
-        .parallelStream()
+    scaleSizes.parallelStream()
         .forEach(
             scale -> {
               Path scalePath = new Path(parent, Integer.toString(scale));
@@ -111,16 +109,17 @@ public class HadoopFileIOTest {
               hadoopFileIO.deletePrefix(scalePath.toUri().toString());
 
               // Hadoop filesystem will throw if the path does not exist
-              assertThrows(
-                  UncheckedIOException.class,
-                  () -> hadoopFileIO.listPrefix(scalePath.toUri().toString()).iterator());
+              assertThatThrownBy(
+                      () -> hadoopFileIO.listPrefix(scalePath.toUri().toString()).iterator())
+                  .isInstanceOf(UncheckedIOException.class)
+                  .hasMessageContaining("java.io.FileNotFoundException");
             });
 
     hadoopFileIO.deletePrefix(parent.toUri().toString());
     // Hadoop filesystem will throw if the path does not exist
-    assertThrows(
-        UncheckedIOException.class,
-        () -> hadoopFileIO.listPrefix(parent.toUri().toString()).iterator());
+    assertThatThrownBy(() -> hadoopFileIO.listPrefix(parent.toUri().toString()).iterator())
+        .isInstanceOf(UncheckedIOException.class)
+        .hasMessageContaining("java.io.FileNotFoundException");
   }
 
   @Test
@@ -130,17 +129,16 @@ public class HadoopFileIOTest {
     hadoopFileIO.deleteFiles(
         filesCreated.stream().map(Path::toString).collect(Collectors.toList()));
     filesCreated.forEach(
-        file -> Assert.assertFalse(hadoopFileIO.newInputFile(file.toString()).exists()));
+        file -> assertThat(hadoopFileIO.newInputFile(file.toString()).exists()).isFalse());
   }
 
   @Test
   public void testDeleteFilesErrorHandling() {
     List<String> filesCreated =
         random.ints(2).mapToObj(x -> "fakefsnotreal://file-" + x).collect(Collectors.toList());
-    Assert.assertThrows(
-        "Should throw a BulkDeletionFailure Exceptions when files can't be deleted",
-        BulkDeletionFailureException.class,
-        () -> hadoopFileIO.deleteFiles(filesCreated));
+    assertThatThrownBy(() -> hadoopFileIO.deleteFiles(filesCreated))
+        .isInstanceOf(BulkDeletionFailureException.class)
+        .hasMessage("Failed to delete 2 files");
   }
 
   @Test
@@ -151,7 +149,7 @@ public class HadoopFileIOTest {
     testHadoopFileIO.initialize(ImmutableMap.of("k1", "v1"));
     FileIO roundTripSerializedFileIO = TestHelpers.KryoHelpers.roundTripSerialize(testHadoopFileIO);
 
-    Assert.assertEquals(testHadoopFileIO.properties(), roundTripSerializedFileIO.properties());
+    assertThat(roundTripSerializedFileIO.properties()).isEqualTo(testHadoopFileIO.properties());
   }
 
   @Test
@@ -162,7 +160,20 @@ public class HadoopFileIOTest {
     testHadoopFileIO.initialize(ImmutableMap.of("k1", "v1"));
     FileIO roundTripSerializedFileIO = TestHelpers.roundTripSerialize(testHadoopFileIO);
 
-    Assert.assertEquals(testHadoopFileIO.properties(), roundTripSerializedFileIO.properties());
+    assertThat(roundTripSerializedFileIO.properties()).isEqualTo(testHadoopFileIO.properties());
+  }
+
+  @Test
+  public void testResolvingFileIOLoad() {
+    ResolvingFileIO resolvingFileIO = new ResolvingFileIO();
+    resolvingFileIO.setConf(new Configuration());
+    resolvingFileIO.initialize(ImmutableMap.of());
+    FileIO result =
+        DynMethods.builder("io")
+            .hiddenImpl(ResolvingFileIO.class, String.class)
+            .build(resolvingFileIO)
+            .invoke("hdfs://foo/bar");
+    assertThat(result).isInstanceOf(HadoopFileIO.class);
   }
 
   private List<Path> createRandomFiles(Path parent, int count) {

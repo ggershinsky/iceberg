@@ -18,24 +18,62 @@
  */
 package org.apache.iceberg.spark.sql;
 
+import static org.apache.iceberg.PlanningMode.DISTRIBUTED;
+import static org.apache.iceberg.PlanningMode.LOCAL;
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
+import org.apache.iceberg.PlanningMode;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.spark.SparkTestBaseWithCatalog;
 import org.apache.spark.sql.execution.SparkPlan;
-import org.assertj.core.api.Assertions;
 import org.junit.After;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
+@RunWith(Parameterized.class)
 public class TestFilterPushDown extends SparkTestBaseWithCatalog {
+
+  @Parameterized.Parameters(name = "planningMode = {0}")
+  public static Object[] parameters() {
+    return new Object[] {LOCAL, DISTRIBUTED};
+  }
+
+  private final PlanningMode planningMode;
+
+  public TestFilterPushDown(PlanningMode planningMode) {
+    this.planningMode = planningMode;
+  }
 
   @After
   public void removeTables() {
     sql("DROP TABLE IF EXISTS %s", tableName);
     sql("DROP TABLE IF EXISTS tmp_view");
+  }
+
+  @Test
+  public void testFilterPushdownWithDecimalValues() {
+    sql(
+        "CREATE TABLE %s (id INT, salary DECIMAL(10, 2), dep STRING)"
+            + "USING iceberg "
+            + "PARTITIONED BY (dep)",
+        tableName);
+    configurePlanningMode(planningMode);
+
+    sql("INSERT INTO %s VALUES (1, 100.01, 'd1')", tableName);
+    sql("INSERT INTO %s VALUES (2, 100.05, 'd1')", tableName);
+
+    checkFilters(
+        "dep = 'd1' AND salary > 100.03" /* query predicate */,
+        "isnotnull(salary) AND (salary > 100.03)" /* Spark post scan filter */,
+        "dep IS NOT NULL, salary IS NOT NULL, dep = 'd1', salary > 100.03" /* Iceberg scan filters */,
+        ImmutableList.of(row(2, new BigDecimal("100.05"), "d1")));
   }
 
   @Test
@@ -45,6 +83,7 @@ public class TestFilterPushDown extends SparkTestBaseWithCatalog {
             + "USING iceberg "
             + "PARTITIONED BY (dep)",
         tableName);
+    configurePlanningMode(planningMode);
 
     sql("INSERT INTO %s VALUES (1, 100, 'd1')", tableName);
     sql("INSERT INTO %s VALUES (2, 200, 'd2')", tableName);
@@ -156,6 +195,7 @@ public class TestFilterPushDown extends SparkTestBaseWithCatalog {
             + "USING iceberg "
             + "PARTITIONED BY (hours(t))",
         tableName);
+    configurePlanningMode(planningMode);
 
     sql("INSERT INTO %s VALUES (1, 100, TIMESTAMP '2021-06-30T01:00:00.000Z')", tableName);
     sql("INSERT INTO %s VALUES (2, 200, TIMESTAMP '2021-06-30T02:00:00.000Z')", tableName);
@@ -201,6 +241,7 @@ public class TestFilterPushDown extends SparkTestBaseWithCatalog {
             + "USING iceberg "
             + "PARTITIONED BY (days(t))",
         tableName);
+    configurePlanningMode(planningMode);
 
     sql("INSERT INTO %s VALUES (1, 100, TIMESTAMP '2021-06-15T01:00:00.000Z')", tableName);
     sql("INSERT INTO %s VALUES (2, 200, TIMESTAMP '2021-06-30T02:00:00.000Z')", tableName);
@@ -243,6 +284,7 @@ public class TestFilterPushDown extends SparkTestBaseWithCatalog {
             + "USING iceberg "
             + "PARTITIONED BY (months(t))",
         tableName);
+    configurePlanningMode(planningMode);
 
     sql("INSERT INTO %s VALUES (1, 100, TIMESTAMP '2021-06-30T01:00:00.000Z')", tableName);
     sql("INSERT INTO %s VALUES (2, 200, TIMESTAMP '2021-06-30T02:00:00.000Z')", tableName);
@@ -285,6 +327,7 @@ public class TestFilterPushDown extends SparkTestBaseWithCatalog {
             + "USING iceberg "
             + "PARTITIONED BY (years(t))",
         tableName);
+    configurePlanningMode(planningMode);
 
     sql("INSERT INTO %s VALUES (1, 100, TIMESTAMP '2021-06-30T01:00:00.000Z')", tableName);
     sql("INSERT INTO %s VALUES (2, 200, TIMESTAMP '2021-06-30T02:00:00.000Z')", tableName);
@@ -327,6 +370,7 @@ public class TestFilterPushDown extends SparkTestBaseWithCatalog {
             + "USING iceberg "
             + "PARTITIONED BY (dep, bucket(8, id))",
         tableName);
+    configurePlanningMode(planningMode);
 
     sql("INSERT INTO %s VALUES (1, 100, 'd1')", tableName);
     sql("INSERT INTO %s VALUES (2, 200, 'd2')", tableName);
@@ -345,6 +389,7 @@ public class TestFilterPushDown extends SparkTestBaseWithCatalog {
             + "USING iceberg "
             + "PARTITIONED BY (truncate(1, dep))",
         tableName);
+    configurePlanningMode(planningMode);
 
     sql("INSERT INTO %s VALUES (1, 100, 'd1')", tableName);
     sql("INSERT INTO %s VALUES (2, 200, 'd2')", tableName);
@@ -369,6 +414,7 @@ public class TestFilterPushDown extends SparkTestBaseWithCatalog {
             + "USING iceberg "
             + "PARTITIONED BY (dep)",
         tableName);
+    configurePlanningMode(planningMode);
 
     sql("INSERT INTO %s VALUES (1, 100, 'd1', 'sd1')", tableName);
 
@@ -409,6 +455,7 @@ public class TestFilterPushDown extends SparkTestBaseWithCatalog {
             + "USING iceberg "
             + "PARTITIONED BY (truncate(2, dep))",
         tableName);
+    configurePlanningMode(planningMode);
 
     sql("INSERT INTO %s VALUES (1, 100, 'd1')", tableName);
 
@@ -449,6 +496,7 @@ public class TestFilterPushDown extends SparkTestBaseWithCatalog {
             + "USING iceberg "
             + "PARTITIONED BY (hours(t))",
         tableName);
+    configurePlanningMode(planningMode);
 
     withDefaultTimeZone(
         "UTC",
@@ -483,6 +531,7 @@ public class TestFilterPushDown extends SparkTestBaseWithCatalog {
     sql(
         "CREATE TABLE %s (id INT, salary DOUBLE)" + "USING iceberg " + "PARTITIONED BY (salary)",
         tableName);
+    configurePlanningMode(planningMode);
 
     sql("INSERT INTO %s VALUES (1, 100.5)", tableName);
     sql("INSERT INTO %s VALUES (2, double('NaN'))", tableName);
@@ -536,16 +585,14 @@ public class TestFilterPushDown extends SparkTestBaseWithCatalog {
     String planAsString = sparkPlan.toString().replaceAll("#(\\d+L?)", "");
 
     if (sparkFilter != null) {
-      Assertions.assertThat(planAsString)
+      assertThat(planAsString)
           .as("Post scan filter should match")
           .contains("Filter (" + sparkFilter + ")");
     } else {
-      Assertions.assertThat(planAsString)
-          .as("Should be no post scan filter")
-          .doesNotContain("Filter (");
+      assertThat(planAsString).as("Should be no post scan filter").doesNotContain("Filter (");
     }
 
-    Assertions.assertThat(planAsString)
+    assertThat(planAsString)
         .as("Pushed filters must match")
         .contains("[filters=" + icebergFilters + ",");
   }

@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.Set;
 import org.apache.iceberg.expressions.Bound;
 import org.apache.iceberg.expressions.BoundPredicate;
+import org.apache.iceberg.expressions.BoundReference;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.ExpressionVisitors;
 import org.apache.iceberg.expressions.Literal;
@@ -59,8 +60,8 @@ class ExpressionToSearchArgument
       ImmutableSet.of(
           TypeID.BINARY, TypeID.FIXED, TypeID.UUID, TypeID.STRUCT, TypeID.MAP, TypeID.LIST);
 
-  private SearchArgument.Builder builder;
-  private Map<Integer, String> idToColumnName;
+  private final SearchArgument.Builder builder;
+  private final Map<Integer, String> idToColumnName;
 
   private ExpressionToSearchArgument(
       SearchArgument.Builder builder, Map<Integer, String> idToColumnName) {
@@ -270,7 +271,8 @@ class ExpressionToSearchArgument
 
   @Override
   public <T> Action predicate(BoundPredicate<T> pred) {
-    if (UNSUPPORTED_TYPES.contains(pred.ref().type().typeId())) {
+    if (UNSUPPORTED_TYPES.contains(pred.ref().type().typeId())
+        || !(pred.term() instanceof BoundReference)) {
       // Cannot push down predicates for types which cannot be represented in PredicateLeaf.Type, so
       // return
       // TruthValue.YES_NO_NULL which signifies that this predicate cannot help with filtering
@@ -330,7 +332,7 @@ class ExpressionToSearchArgument
         return Timestamp.from(
             Instant.ofEpochSecond(
                 Math.floorDiv(microsFromEpoch, 1_000_000),
-                Math.floorMod(microsFromEpoch, 1_000_000) * 1_000));
+                Math.floorMod(microsFromEpoch, 1_000_000) * 1_000L));
       case DECIMAL:
         return new HiveDecimalWritable(HiveDecimal.create((BigDecimal) icebergLiteral, false));
       default:

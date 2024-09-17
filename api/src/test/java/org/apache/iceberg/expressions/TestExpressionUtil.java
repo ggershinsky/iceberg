@@ -33,7 +33,6 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.DateTimeUtil;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 public class TestExpressionUtil {
@@ -43,12 +42,17 @@ public class TestExpressionUtil {
           Types.NestedField.required(2, "val", Types.IntegerType.get()),
           Types.NestedField.required(3, "val2", Types.IntegerType.get()),
           Types.NestedField.required(4, "ts", Types.TimestampType.withoutZone()),
-          Types.NestedField.required(5, "date", Types.DateType.get()),
-          Types.NestedField.required(6, "time", Types.DateType.get()),
-          Types.NestedField.optional(7, "data", Types.StringType.get()),
-          Types.NestedField.optional(8, "measurement", Types.DoubleType.get()));
+          Types.NestedField.required(5, "tsns", Types.TimestampNanoType.withoutZone()),
+          Types.NestedField.required(6, "date", Types.DateType.get()),
+          Types.NestedField.required(7, "time", Types.DateType.get()),
+          Types.NestedField.optional(8, "data", Types.StringType.get()),
+          Types.NestedField.optional(9, "measurement", Types.DoubleType.get()),
+          Types.NestedField.optional(10, "test", Types.IntegerType.get()));
 
   private static final Types.StructType STRUCT = SCHEMA.asStruct();
+
+  private static final Types.StructType FLOAT_TEST =
+      Types.StructType.of(Types.NestedField.optional(1, "test", Types.FloatType.get()));
 
   @Test
   public void testUnchangedUnaryPredicates() {
@@ -59,6 +63,7 @@ public class TestExpressionUtil {
             Expressions.isNaN("test"),
             Expressions.notNaN("test"))) {
       assertEquals(unary, ExpressionUtil.sanitize(unary));
+      assertEquals(unary, ExpressionUtil.sanitize(FLOAT_TEST, unary, true));
     }
   }
 
@@ -68,7 +73,15 @@ public class TestExpressionUtil {
         Expressions.in("test", "(2-digit-int)", "(3-digit-int)"),
         ExpressionUtil.sanitize(Expressions.in("test", 34, 345)));
 
+    assertEquals(
+        Expressions.in("test", "(2-digit-int)", "(3-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.in("test", 34, 345), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.in("test", 34, 345)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test IN ((2-digit-int), (3-digit-int))");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.in("test", 34, 345), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test IN ((2-digit-int), (3-digit-int))");
   }
@@ -101,7 +114,7 @@ public class TestExpressionUtil {
 
   @Test
   public void zeroAndNegativeNumberHandling() {
-    Assertions.assertThat(
+    assertThat(
             ExpressionUtil.toSanitizedString(
                 Expressions.in(
                     "test",
@@ -124,6 +137,10 @@ public class TestExpressionUtil {
         ExpressionUtil.sanitize(Expressions.notIn("test", 34, 345)));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.notIn("test", 34, 345)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test NOT IN ((2-digit-int), (3-digit-int))");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.notIn("test", 34, 345), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test NOT IN ((2-digit-int), (3-digit-int))");
   }
@@ -161,7 +178,15 @@ public class TestExpressionUtil {
         Expressions.lessThan("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.lessThan("test", 34)));
 
+    assertEquals(
+        Expressions.lessThan("test", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.lessThan("test", 34), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.lessThan("test", 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test < (2-digit-int)");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.lessThan("test", 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test < (2-digit-int)");
   }
@@ -172,7 +197,16 @@ public class TestExpressionUtil {
         Expressions.lessThanOrEqual("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.lessThanOrEqual("test", 34)));
 
+    assertEquals(
+        Expressions.lessThanOrEqual("test", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.lessThanOrEqual("test", 34), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.lessThanOrEqual("test", 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test <= (2-digit-int)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(STRUCT, Expressions.lessThanOrEqual("test", 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test <= (2-digit-int)");
   }
@@ -183,7 +217,15 @@ public class TestExpressionUtil {
         Expressions.greaterThan("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.greaterThan("test", 34)));
 
+    assertEquals(
+        Expressions.greaterThan("test", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.greaterThan("test", 34), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.greaterThan("test", 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test > (2-digit-int)");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.greaterThan("test", 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test > (2-digit-int)");
   }
@@ -194,7 +236,17 @@ public class TestExpressionUtil {
         Expressions.greaterThanOrEqual("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.greaterThanOrEqual("test", 34)));
 
+    assertEquals(
+        Expressions.greaterThanOrEqual("test", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.greaterThanOrEqual("test", 34), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.greaterThanOrEqual("test", 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test >= (2-digit-int)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(
+                STRUCT, Expressions.greaterThanOrEqual("test", 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test >= (2-digit-int)");
   }
@@ -205,7 +257,15 @@ public class TestExpressionUtil {
         Expressions.equal("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.equal("test", 34)));
 
+    assertEquals(
+        Expressions.equal("test", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.equal("test", 34), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test = (2-digit-int)");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.equal("test", 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test = (2-digit-int)");
   }
@@ -216,7 +276,15 @@ public class TestExpressionUtil {
         Expressions.notEqual("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.notEqual("test", 34)));
 
+    assertEquals(
+        Expressions.notEqual("test", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.notEqual("test", 34), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.notEqual("test", 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test != (2-digit-int)");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.notEqual("test", 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test != (2-digit-int)");
   }
@@ -227,9 +295,18 @@ public class TestExpressionUtil {
         Expressions.startsWith("test", "(hash-34d05fb7)"),
         ExpressionUtil.sanitize(Expressions.startsWith("test", "aaa")));
 
+    assertEquals(
+        Expressions.startsWith("data", "(hash-34d05fb7)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.startsWith("data", "aaa"), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.startsWith("test", "aaa")))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test STARTS WITH (hash-34d05fb7)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(STRUCT, Expressions.startsWith("data", "aaa"), true))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("data STARTS WITH (hash-34d05fb7)");
   }
 
   @Test
@@ -238,9 +315,19 @@ public class TestExpressionUtil {
         Expressions.notStartsWith("test", "(hash-34d05fb7)"),
         ExpressionUtil.sanitize(Expressions.notStartsWith("test", "aaa")));
 
+    assertEquals(
+        Expressions.notStartsWith("data", "(hash-34d05fb7)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.notStartsWith("data", "aaa"), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.notStartsWith("test", "aaa")))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test NOT STARTS WITH (hash-34d05fb7)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(
+                STRUCT, Expressions.notStartsWith("data", "aaa"), true))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("data NOT STARTS WITH (hash-34d05fb7)");
   }
 
   @Test
@@ -249,9 +336,20 @@ public class TestExpressionUtil {
         Expressions.equal(Expressions.truncate("test", 2), "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.equal(Expressions.truncate("test", 2), 34)));
 
+    assertEquals(
+        Expressions.equal(Expressions.truncate("test", 2), "(2-digit-int)"),
+        ExpressionUtil.sanitize(
+            STRUCT, Expressions.equal(Expressions.truncate("test", 2), 34), true));
+
     assertThat(
             ExpressionUtil.toSanitizedString(
                 Expressions.equal(Expressions.truncate("test", 2), 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("truncate[2](test) = (2-digit-int)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(
+                STRUCT, Expressions.equal(Expressions.truncate("test", 2), 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("truncate[2](test) = (2-digit-int)");
   }
@@ -262,9 +360,17 @@ public class TestExpressionUtil {
         Expressions.equal("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.equal("test", 34L)));
 
+    assertEquals(
+        Expressions.equal("id", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.equal("id", 34L), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", 34L)))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test = (2-digit-int)");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.equal("id", 34L), true))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("id = (2-digit-int)");
   }
 
   @Test
@@ -273,7 +379,15 @@ public class TestExpressionUtil {
         Expressions.equal("test", "(2-digit-float)"),
         ExpressionUtil.sanitize(Expressions.equal("test", 34.12F)));
 
+    assertEquals(
+        Expressions.equal("test", "(2-digit-float)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.equal("test", 34.12F), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", 34.12F)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test = (2-digit-float)");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.equal("test", 34.12F), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test = (2-digit-float)");
   }
@@ -284,9 +398,17 @@ public class TestExpressionUtil {
         Expressions.equal("test", "(2-digit-float)"),
         ExpressionUtil.sanitize(Expressions.equal("test", 34.12D)));
 
+    assertEquals(
+        Expressions.equal("measurement", "(2-digit-float)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.equal("measurement", 34.12D), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", 34.12D)))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test = (2-digit-float)");
+
+    assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("measurement", 34.12D)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("measurement = (2-digit-float)");
   }
 
   @Test
@@ -295,9 +417,18 @@ public class TestExpressionUtil {
         Expressions.equal("test", "(date)"),
         ExpressionUtil.sanitize(Expressions.equal("test", "2022-04-29")));
 
+    assertEquals(
+        Expressions.equal("date", "(date)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.equal("date", "2022-04-29"), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", "2022-04-29")))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test = (date)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(STRUCT, Expressions.equal("date", "2022-04-29"), true))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("date = (date)");
   }
 
   @Test
@@ -309,9 +440,18 @@ public class TestExpressionUtil {
         Expressions.equal("test", "(time)"),
         ExpressionUtil.sanitize(Expressions.equal("test", currentTime)));
 
+    assertEquals(
+        Expressions.equal("time", "(time)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.equal("time", currentTime), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", currentTime)))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test = (time)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(STRUCT, Expressions.equal("time", currentTime), true))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("time = (time)");
   }
 
   @Test
@@ -321,14 +461,24 @@ public class TestExpressionUtil {
             "2022-04-29T23:49:51",
             "2022-04-29T23:49:51.123456",
             "2022-04-29T23:49:51-07:00",
-            "2022-04-29T23:49:51.123456+01:00")) {
+            "2022-04-29T23:49:51.123456+01:00",
+            "2022-04-29T23:49:51.123456789",
+            "2022-04-29T23:49:51.123456789+01:00")) {
       assertEquals(
           Expressions.equal("test", "(timestamp)"),
           ExpressionUtil.sanitize(Expressions.equal("test", timestamp)));
 
+      assertEquals(
+          Expressions.equal("ts", "(timestamp)"),
+          ExpressionUtil.sanitize(STRUCT, Expressions.equal("ts", timestamp), true));
+
       assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", timestamp)))
           .as("Sanitized string should be identical except for descriptive literal")
           .isEqualTo("test = (timestamp)");
+
+      assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.equal("ts", timestamp), true))
+          .as("Sanitized string should be identical except for descriptive literal")
+          .isEqualTo("ts = (timestamp)");
     }
   }
 
@@ -349,6 +499,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(nowLocal).to(Types.TimestampType.withoutZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-about-now)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(nowLocal).to(Types.TimestampNanoType.withoutZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", nowLocal)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -375,6 +532,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(ninetyMinutesAgoLocal).to(Types.TimestampType.withoutZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-1-hours-ago)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(ninetyMinutesAgoLocal).to(Types.TimestampNanoType.withoutZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", ninetyMinutesAgoLocal)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -401,6 +565,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(lastWeekLocal).to(Types.TimestampType.withoutZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-7-days-ago)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(lastWeekLocal).to(Types.TimestampNanoType.withoutZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", lastWeekLocal)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -427,6 +598,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(ninetyMinutesFromNowLocal).to(Types.TimestampType.withoutZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-1-hours-from-now)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(ninetyMinutesFromNowLocal).to(Types.TimestampNanoType.withoutZone()))));
 
     assertThat(
             ExpressionUtil.toSanitizedString(Expressions.equal("test", ninetyMinutesFromNowLocal)))
@@ -450,6 +628,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(nowUtc).to(Types.TimestampType.withZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-about-now)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(nowUtc).to(Types.TimestampNanoType.withZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", nowUtc)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -471,6 +656,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(ninetyMinutesAgoUtc).to(Types.TimestampType.withZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-1-hours-ago)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(ninetyMinutesAgoUtc).to(Types.TimestampNanoType.withZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", ninetyMinutesAgoUtc)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -492,6 +684,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(lastWeekUtc).to(Types.TimestampType.withZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-7-days-ago)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(lastWeekUtc).to(Types.TimestampNanoType.withZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", lastWeekUtc)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -513,6 +712,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(ninetyMinutesFromNowUtc).to(Types.TimestampType.withZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-1-hours-from-now)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(ninetyMinutesFromNowUtc).to(Types.TimestampNanoType.withZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", ninetyMinutesFromNowUtc)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -586,7 +792,7 @@ public class TestExpressionUtil {
             "2022-04-29T23:70:51-07:00",
             "2022-04-29T23:49:51.123456+100:00")) {
       String sanitizedFilter = ExpressionUtil.toSanitizedString(Expressions.equal("test", filter));
-      Assertions.assertThat(filterPattern.matcher(sanitizedFilter)).matches();
+      assertThat(filterPattern.matcher(sanitizedFilter)).matches();
     }
   }
 
@@ -841,7 +1047,7 @@ public class TestExpressionUtil {
   }
 
   private void assertEquals(Expression expected, Expression actual) {
-    Assertions.assertThat(expected).isInstanceOf(UnboundPredicate.class);
+    assertThat(expected).isInstanceOf(UnboundPredicate.class);
     assertEquals((UnboundPredicate<?>) expected, (UnboundPredicate<?>) actual);
   }
 
@@ -852,7 +1058,7 @@ public class TestExpressionUtil {
   }
 
   private void assertEquals(UnboundTerm<?> expected, UnboundTerm<?> actual) {
-    Assertions.assertThat(expected)
+    assertThat(expected)
         .as("Unknown expected term: " + expected)
         .isOfAnyClassIn(NamedReference.class, UnboundTransform.class);
 

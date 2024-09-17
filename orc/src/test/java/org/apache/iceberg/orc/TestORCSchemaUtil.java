@@ -22,9 +22,8 @@ import static org.apache.iceberg.orc.ORCSchemaUtil.ICEBERG_ID_ATTRIBUTE;
 import static org.apache.iceberg.orc.ORCSchemaUtil.ICEBERG_REQUIRED_ATTRIBUTE;
 import static org.apache.iceberg.types.Types.NestedField.optional;
 import static org.apache.iceberg.types.Types.NestedField.required;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.Collections;
 import java.util.List;
@@ -36,8 +35,7 @@ import org.apache.iceberg.mapping.NameMapping;
 import org.apache.iceberg.types.TypeUtil;
 import org.apache.iceberg.types.Types;
 import org.apache.orc.TypeDescription;
-import org.assertj.core.api.Assertions;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestORCSchemaUtil {
 
@@ -65,7 +63,7 @@ public class TestORCSchemaUtil {
   @Test
   public void testRoundtripConversionPrimitive() {
     TypeDescription orcSchema = ORCSchemaUtil.convert(new Schema(SUPPORTED_PRIMITIVES.fields()));
-    assertEquals(SUPPORTED_PRIMITIVES, ORCSchemaUtil.convert(orcSchema).asStruct());
+    assertThat(ORCSchemaUtil.convert(orcSchema).asStruct()).isEqualTo(SUPPORTED_PRIMITIVES);
   }
 
   @Test
@@ -191,7 +189,7 @@ public class TestORCSchemaUtil {
                                     Types.ListType.ofRequired(
                                         1250, nestedStructTypeForStruct))))))));
     TypeDescription orcSchema = ORCSchemaUtil.convert(expectedSchema);
-    assertEquals(expectedSchema.asStruct(), ORCSchemaUtil.convert(orcSchema).asStruct());
+    assertThat(ORCSchemaUtil.convert(orcSchema).asStruct()).isEqualTo(expectedSchema.asStruct());
   }
 
   @Test
@@ -213,16 +211,18 @@ public class TestORCSchemaUtil {
             optional(3, "c", Types.DecimalType.of(15, 2)));
 
     TypeDescription newOrcSchema = ORCSchemaUtil.buildOrcProjection(evolveSchema, orcSchema);
-    assertEquals(3, newOrcSchema.getChildren().size());
-    assertEquals(1, newOrcSchema.findSubtype("a").getId());
-    assertEquals(TypeDescription.Category.LONG, newOrcSchema.findSubtype("a").getCategory());
-    assertEquals(2, newOrcSchema.findSubtype("b").getId());
-    assertEquals(TypeDescription.Category.DOUBLE, newOrcSchema.findSubtype("b").getCategory());
+    assertThat(newOrcSchema.getChildren()).hasSize(3);
+    assertThat(newOrcSchema.findSubtype("a").getId()).isEqualTo(1);
+    assertThat(newOrcSchema.findSubtype("a").getCategory())
+        .isEqualTo(TypeDescription.Category.LONG);
+    assertThat(newOrcSchema.findSubtype("b").getId()).isEqualTo(2);
+    assertThat(newOrcSchema.findSubtype("b").getCategory())
+        .isEqualTo(TypeDescription.Category.DOUBLE);
     TypeDescription decimalC = newOrcSchema.findSubtype("c");
-    assertEquals(3, decimalC.getId());
-    assertEquals(TypeDescription.Category.DECIMAL, decimalC.getCategory());
-    assertEquals(15, decimalC.getPrecision());
-    assertEquals(2, decimalC.getScale());
+    assertThat(decimalC.getId()).isEqualTo(3);
+    assertThat(decimalC.getCategory()).isEqualTo(TypeDescription.Category.DECIMAL);
+    assertThat(decimalC.getPrecision()).isEqualTo(15);
+    assertThat(decimalC.getScale()).isEqualTo(2);
   }
 
   @Test
@@ -232,7 +232,7 @@ public class TestORCSchemaUtil {
     TypeDescription orcSchema = ORCSchemaUtil.convert(originalSchema);
     Schema evolveSchema = new Schema(optional(1, "a", Types.IntegerType.get()));
 
-    Assertions.assertThatThrownBy(() -> ORCSchemaUtil.buildOrcProjection(evolveSchema, orcSchema))
+    assertThatThrownBy(() -> ORCSchemaUtil.buildOrcProjection(evolveSchema, orcSchema))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Can not promote LONG type to INTEGER");
   }
@@ -267,7 +267,9 @@ public class TestORCSchemaUtil {
                 5,
                 "mapCol",
                 Types.MapType.ofOptional(3, 4, Types.StringType.get(), Types.BooleanType.get())));
-    assertEquals("Schemas must match.", expectedSchema.asStruct(), icebergSchema.asStruct());
+    assertThat(icebergSchema.asStruct())
+        .as("Schemas must match.")
+        .isEqualTo(expectedSchema.asStruct());
 
     TypeDescription structCol = TypeDescription.createStruct();
     structCol.setAttribute(ICEBERG_ID_ATTRIBUTE, "7");
@@ -301,7 +303,9 @@ public class TestORCSchemaUtil {
                     required(6, "doubleCol", Types.DoubleType.get())
                     // Skipped mapCol2 since value has no Iceberg ID
                     )));
-    assertEquals("Schemas must match.", expectedSchema2.asStruct(), icebergSchema2.asStruct());
+    assertThat(icebergSchema2.asStruct())
+        .as("Schemas must match.")
+        .isEqualTo(expectedSchema2.asStruct());
   }
 
   @Test
@@ -322,13 +326,15 @@ public class TestORCSchemaUtil {
             optional(4, "listCol", Types.ListType.ofOptional(40, Types.DoubleType.get())));
 
     TypeDescription orcSchema = ORCSchemaUtil.removeIds(ORCSchemaUtil.convert(schema));
-    assertFalse("Should not have Ids", ORCSchemaUtil.hasIds(orcSchema));
+    assertThat(ORCSchemaUtil.hasIds(orcSchema)).as("Should not have Ids").isFalse();
 
     TypeDescription map2Col =
         TypeDescription.createMap(TypeDescription.createString(), TypeDescription.createBinary());
     map2Col.setAttribute(ICEBERG_ID_ATTRIBUTE, "4");
     orcSchema.addField("map2Col", map2Col);
-    assertTrue("Should have Ids after adding one type with Id", ORCSchemaUtil.hasIds(orcSchema));
+    assertThat(ORCSchemaUtil.hasIds(orcSchema))
+        .as("Should have Ids after adding one type with Id")
+        .isTrue();
   }
 
   @Test
@@ -396,9 +402,9 @@ public class TestORCSchemaUtil {
         ORCSchemaUtil.applyNameMapping(
             ORCSchemaUtil.removeIds(typeDescriptionWithIds), nameMapping);
 
-    assertTrue(
-        "TypeDescription schemas should be equal, including IDs",
-        equalsWithIds(typeDescriptionWithIds, typeDescriptionWithIdsFromNameMapping));
+    assertThat(equalsWithIds(typeDescriptionWithIds, typeDescriptionWithIdsFromNameMapping))
+        .as("TypeDescription schemas should be equal, including IDs")
+        .isTrue();
   }
 
   @Test
@@ -504,14 +510,16 @@ public class TestORCSchemaUtil {
     longField.setAttribute(ICEBERG_ID_ATTRIBUTE, "40");
     expected.addField("long_r40", longField);
 
-    assertTrue(
-        "ORC Schema must have the same structure, but one has Iceberg IDs",
-        typeDescriptionWithIdsFromNameMapping.equals(fileSchema, false));
+    assertThat(typeDescriptionWithIdsFromNameMapping.equals(fileSchema, false))
+        .as("ORC Schema must have the same structure, but one has Iceberg IDs")
+        .isTrue();
 
     TypeDescription projectedOrcSchema =
         ORCSchemaUtil.buildOrcProjection(mappingSchema, typeDescriptionWithIdsFromNameMapping);
-    assertTrue(
-        "Schema should be the prunned by projection", equalsWithIds(expected, projectedOrcSchema));
+
+    assertThat(equalsWithIds(expected, projectedOrcSchema))
+        .as("Schema should be the prunned by projection")
+        .isTrue();
   }
 
   private static boolean equalsWithIds(TypeDescription first, TypeDescription second) {

@@ -19,10 +19,9 @@
 package org.apache.iceberg.actions;
 
 import java.util.Map;
-import org.immutables.value.Value;
+import java.util.concurrent.ExecutorService;
 
 /** An action that creates an independent snapshot of an existing table. */
-@Value.Enclosing
 public interface SnapshotTable extends Action<SnapshotTable, SnapshotTable.Result> {
   /**
    * Sets the table identifier for the newly created Iceberg table.
@@ -59,8 +58,18 @@ public interface SnapshotTable extends Action<SnapshotTable, SnapshotTable.Resul
    */
   SnapshotTable tableProperty(String key, String value);
 
+  /**
+   * Sets the executor service to use for parallel file reading. The default is not using executor
+   * service.
+   *
+   * @param service executor service
+   * @return this for method chaining
+   */
+  default SnapshotTable executeWith(ExecutorService service) {
+    throw new UnsupportedOperationException("Setting executor service is not supported");
+  }
+
   /** The action result that contains a summary of the execution. */
-  @Value.Immutable
   interface Result {
     /** Returns the number of imported data files. */
     long importedDataFilesCount();

@@ -18,8 +18,12 @@
  */
 package org.apache.iceberg.spark.sql;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 import java.io.File;
 import java.util.Map;
+import java.util.UUID;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
@@ -32,7 +36,6 @@ import org.apache.iceberg.types.Types;
 import org.apache.iceberg.types.Types.NestedField;
 import org.apache.iceberg.types.Types.StructType;
 import org.apache.spark.sql.connector.catalog.TableCatalog;
-import org.assertj.core.api.Assertions;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Assume;
@@ -64,6 +67,26 @@ public class TestCreateTable extends SparkCatalogTestBase {
   }
 
   @Test
+  public void testTransformSingularForm() {
+    Assert.assertFalse("Table should not already exist", validationCatalog.tableExists(tableIdent));
+    sql(
+        "CREATE TABLE IF NOT EXISTS %s (id BIGINT NOT NULL, ts timestamp) "
+            + "USING iceberg partitioned by (hour(ts))",
+        tableName);
+    Assert.assertTrue("Table should exist", validationCatalog.tableExists(tableIdent));
+  }
+
+  @Test
+  public void testTransformPluralForm() {
+    Assert.assertFalse("Table should not already exist", validationCatalog.tableExists(tableIdent));
+    sql(
+        "CREATE TABLE IF NOT EXISTS %s (id BIGINT NOT NULL, ts timestamp) "
+            + "USING iceberg partitioned by (hours(ts))",
+        tableName);
+    Assert.assertTrue("Table should exist", validationCatalog.tableExists(tableIdent));
+  }
+
+  @Test
   public void testCreateTable() {
     Assert.assertFalse("Table should not already exist", validationCatalog.tableExists(tableIdent));
 
@@ -82,6 +105,28 @@ public class TestCreateTable extends SparkCatalogTestBase {
     Assert.assertNull(
         "Should not have the default format set",
         table.properties().get(TableProperties.DEFAULT_FILE_FORMAT));
+  }
+
+  @Test
+  public void testCreateTablePartitionedByUUID() {
+    assertThat(validationCatalog.tableExists(tableIdent)).isFalse();
+    Schema schema = new Schema(1, Types.NestedField.optional(1, "uuid", Types.UUIDType.get()));
+    PartitionSpec spec = PartitionSpec.builderFor(schema).bucket("uuid", 16).build();
+    validationCatalog.createTable(tableIdent, schema, spec);
+
+    Table table = validationCatalog.loadTable(tableIdent);
+    assertThat(table).isNotNull();
+
+    StructType expectedSchema =
+        StructType.of(Types.NestedField.optional(1, "uuid", Types.UUIDType.get()));
+    assertThat(table.schema().asStruct()).isEqualTo(expectedSchema);
+    assertThat(table.spec().fields()).hasSize(1);
+
+    String uuid = UUID.randomUUID().toString();
+
+    sql("INSERT INTO %s VALUES('%s')", tableName, uuid);
+
+    assertThat(sql("SELECT uuid FROM %s", tableName)).hasSize(1).element(0).isEqualTo(row(uuid));
   }
 
   @Test
@@ -121,7 +166,7 @@ public class TestCreateTable extends SparkCatalogTestBase {
         "parquet",
         table.properties().get(TableProperties.DEFAULT_FILE_FORMAT));
 
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 sql(
                     "CREATE TABLE %s.default.fail (id BIGINT NOT NULL, data STRING) USING crocodile",
@@ -232,7 +277,7 @@ public class TestCreateTable extends SparkCatalogTestBase {
     File tableLocation = temp.newFolder();
     Assert.assertTrue(tableLocation.delete());
 
-    String location = "file:" + tableLocation.toString();
+    String location = "file:" + tableLocation;
 
     sql(
         "CREATE TABLE %s "
@@ -334,7 +379,7 @@ public class TestCreateTable extends SparkCatalogTestBase {
     TableOperations ops = ((BaseTable) table).operations();
     Assert.assertEquals("should create table using format v2", 2, ops.refresh().formatVersion());
 
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () -> sql("ALTER TABLE %s SET TBLPROPERTIES ('format-version'='1')", tableName))
         .cause()
         .isInstanceOf(IllegalArgumentException.class)

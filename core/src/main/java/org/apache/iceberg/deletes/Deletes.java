@@ -21,6 +21,7 @@ package org.apache.iceberg.deletes;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -35,12 +36,21 @@ import org.apache.iceberg.io.FilterIterator;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.types.Comparators;
 import org.apache.iceberg.types.Types;
+import org.apache.iceberg.util.CharSequenceMap;
 import org.apache.iceberg.util.Filter;
+import org.apache.iceberg.util.ParallelIterable;
 import org.apache.iceberg.util.SortedMerge;
 import org.apache.iceberg.util.StructLikeSet;
+import org.apache.iceberg.util.ThreadPools;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class Deletes {
+
+  private static final Logger LOG = LoggerFactory.getLogger(Deletes.class);
+
   private static final Schema POSITION_DELETE_SCHEMA =
       new Schema(MetadataColumns.DELETE_FILE_PATH, MetadataColumns.DELETE_FILE_POS);
 
@@ -120,8 +130,44 @@ public class Deletes {
     }
   }
 
+  /**
+   * Builds a map of position delete indexes by path.
+   *
+   * <p>Unlike {@link #toPositionIndex(CharSequence, List)}, this method builds a position delete
+   * index for each referenced data file and does not filter deletes. This can be useful when the
+   * entire delete file content is needed (e.g. caching).
+   *
+   * @param posDeletes position deletes
+   * @return the map of position delete indexes by path
+   */
+  public static <T extends StructLike> CharSequenceMap<PositionDeleteIndex> toPositionIndexes(
+      CloseableIterable<T> posDeletes) {
+    CharSequenceMap<PositionDeleteIndex> indexes = CharSequenceMap.create();
+
+    try (CloseableIterable<T> deletes = posDeletes) {
+      for (T delete : deletes) {
+        CharSequence filePath = (CharSequence) FILENAME_ACCESSOR.get(delete);
+        long position = (long) POSITION_ACCESSOR.get(delete);
+        PositionDeleteIndex index =
+            indexes.computeIfAbsent(filePath, key -> new BitmapPositionDeleteIndex());
+        index.delete(position);
+      }
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to close position delete source", e);
+    }
+
+    return indexes;
+  }
+
   public static <T extends StructLike> PositionDeleteIndex toPositionIndex(
       CharSequence dataLocation, List<CloseableIterable<T>> deleteFiles) {
+    return toPositionIndex(dataLocation, deleteFiles, ThreadPools.getDeleteWorkerPool());
+  }
+
+  public static <T extends StructLike> PositionDeleteIndex toPositionIndex(
+      CharSequence dataLocation,
+      List<CloseableIterable<T>> deleteFiles,
+      ExecutorService deleteWorkerPool) {
     DataFileFilter<T> locationFilter = new DataFileFilter<>(dataLocation);
     List<CloseableIterable<Long>> positions =
         Lists.transform(
@@ -129,7 +175,11 @@ public class Deletes {
             deletes ->
                 CloseableIterable.transform(
                     locationFilter.filter(deletes), row -> (Long) POSITION_ACCESSOR.get(row)));
-    return toPositionIndex(CloseableIterable.concat(positions));
+    if (positions.size() > 1 && deleteWorkerPool != null) {
+      return toPositionIndex(new ParallelIterable<>(positions, deleteWorkerPool));
+    } else {
+      return toPositionIndex(CloseableIterable.concat(positions));
+    }
   }
 
   public static PositionDeleteIndex toPositionIndex(CloseableIterable<Long> posDeletes) {
@@ -219,7 +269,7 @@ public class Deletes {
       CloseableIterator<T> iter;
       if (deletePosIterator.hasNext()) {
         nextDeletePos = deletePosIterator.next();
-        iter = applyDelete(rows.iterator());
+        iter = applyDelete(rows.iterator(), deletePosIterator);
       } else {
         iter = rows.iterator();
       }
@@ -249,7 +299,8 @@ public class Deletes {
       return isDeleted;
     }
 
-    protected abstract CloseableIterator<T> applyDelete(CloseableIterator<T> items);
+    protected abstract CloseableIterator<T> applyDelete(
+        CloseableIterator<T> items, CloseableIterator<Long> deletePositions);
   }
 
   private static class PositionStreamDeleteFilter<T> extends PositionStreamDeleteIterable<T> {
@@ -265,7 +316,8 @@ public class Deletes {
     }
 
     @Override
-    protected CloseableIterator<T> applyDelete(CloseableIterator<T> items) {
+    protected CloseableIterator<T> applyDelete(
+        CloseableIterator<T> items, CloseableIterator<Long> deletePositions) {
       return new FilterIterator<T>(items) {
         @Override
         protected boolean shouldKeep(T item) {
@@ -275,6 +327,16 @@ public class Deletes {
           }
 
           return !deleted;
+        }
+
+        @Override
+        public void close() {
+          try {
+            deletePositions.close();
+          } catch (IOException e) {
+            LOG.warn("Error closing delete file", e);
+          }
+          super.close();
         }
       };
     }
@@ -293,15 +355,38 @@ public class Deletes {
     }
 
     @Override
-    protected CloseableIterator<T> applyDelete(CloseableIterator<T> items) {
-      return CloseableIterator.transform(
-          items,
-          row -> {
-            if (isDeleted(row)) {
-              markDeleted.accept(row);
-            }
-            return row;
-          });
+    protected CloseableIterator<T> applyDelete(
+        CloseableIterator<T> items, CloseableIterator<Long> deletePositions) {
+
+      return new CloseableIterator<T>() {
+        @Override
+        public void close() {
+          try {
+            deletePositions.close();
+          } catch (IOException e) {
+            LOG.warn("Error closing delete file", e);
+          }
+          try {
+            items.close();
+          } catch (IOException e) {
+            LOG.warn("Error closing data file", e);
+          }
+        }
+
+        @Override
+        public boolean hasNext() {
+          return items.hasNext();
+        }
+
+        @Override
+        public T next() {
+          T row = items.next();
+          if (isDeleted(row)) {
+            markDeleted.accept(row);
+          }
+          return row;
+        }
+      };
     }
   }
 
@@ -314,33 +399,9 @@ public class Deletes {
 
     @Override
     protected boolean shouldKeep(T posDelete) {
-      return charSeqEquals(dataLocation, (CharSequence) FILENAME_ACCESSOR.get(posDelete));
-    }
-
-    private boolean charSeqEquals(CharSequence s1, CharSequence s2) {
-      if (s1 == s2) {
-        return true;
-      }
-
-      int count = s1.length();
-      if (count != s2.length()) {
-        return false;
-      }
-
-      if (s1 instanceof String && s2 instanceof String && s1.hashCode() != s2.hashCode()) {
-        return false;
-      }
-
-      // File paths inside a delete file normally have more identical chars at the beginning. For
-      // example, a typical
-      // path is like "s3:/bucket/db/table/data/partition/00000-0-[uuid]-00001.parquet".
-      // The uuid is where the difference starts. So it's faster to find the first diff backward.
-      for (int i = count - 1; i >= 0; i--) {
-        if (s1.charAt(i) != s2.charAt(i)) {
-          return false;
-        }
-      }
-      return true;
+      return Comparators.filePath()
+              .compare(dataLocation, (CharSequence) FILENAME_ACCESSOR.get(posDelete))
+          == 0;
     }
   }
 }

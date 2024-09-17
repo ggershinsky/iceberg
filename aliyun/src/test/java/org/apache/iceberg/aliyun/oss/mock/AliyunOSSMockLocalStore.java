@@ -18,6 +18,8 @@
  */
 package org.apache.iceberg.aliyun.oss.mock;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import com.aliyun.oss.OSSErrorCode;
 import com.aliyun.oss.model.Bucket;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -33,10 +35,11 @@ import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import org.apache.commons.io.FileUtils;
+import java.util.stream.Stream;
 import org.apache.directory.api.util.Hex;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -101,7 +104,7 @@ public class AliyunOSSMockLocalStore {
 
   void createBucket(String bucketName) throws IOException {
     File newBucket = new File(root, bucketName);
-    FileUtils.forceMkdir(newBucket);
+    Files.createDirectory(newBucket.toPath());
   }
 
   Bucket getBucket(String bucketName) {
@@ -109,7 +112,7 @@ public class AliyunOSSMockLocalStore {
         findBucketsByFilter(
             file -> Files.isDirectory(file) && file.getFileName().endsWith(bucketName));
 
-    return buckets.size() > 0 ? buckets.get(0) : null;
+    return !buckets.isEmpty() ? buckets.get(0) : null;
   }
 
   void deleteBucket(String bucketName) throws IOException {
@@ -122,7 +125,9 @@ public class AliyunOSSMockLocalStore {
           409, OSSErrorCode.BUCKET_NOT_EMPTY, "The bucket you tried to delete is not empty. ");
     }
 
-    FileUtils.deleteDirectory(dir);
+    try (Stream<Path> walk = Files.walk(dir.toPath())) {
+      walk.sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+    }
   }
 
   ObjectMetadata putObject(
@@ -134,7 +139,9 @@ public class AliyunOSSMockLocalStore {
       Map<String, String> userMetaData)
       throws IOException {
     File bucketDir = new File(root, bucketName);
-    assert bucketDir.exists() || bucketDir.mkdirs();
+    assertThat(bucketDir)
+        .satisfiesAnyOf(
+            bucket -> assertThat(bucket).exists(), bucket -> assertThat(bucket.mkdirs()).isTrue());
 
     File dataFile = new File(bucketDir, fileName + DATA_FILE);
     File metaFile = new File(bucketDir, fileName + META_FILE);
@@ -167,17 +174,21 @@ public class AliyunOSSMockLocalStore {
 
   void deleteObject(String bucketName, String filename) {
     File bucketDir = new File(root, bucketName);
-    assert bucketDir.exists();
+    assertThat(bucketDir).exists();
 
     File dataFile = new File(bucketDir, filename + DATA_FILE);
     File metaFile = new File(bucketDir, filename + META_FILE);
-    assert !dataFile.exists() || dataFile.delete();
-    assert !metaFile.exists() || metaFile.delete();
+    assertThat(dataFile)
+        .satisfiesAnyOf(
+            file -> assertThat(file).doesNotExist(), file -> assertThat(file.delete()).isTrue());
+    assertThat(metaFile)
+        .satisfiesAnyOf(
+            file -> assertThat(file).doesNotExist(), file -> assertThat(file.delete()).isTrue());
   }
 
   ObjectMetadata getObjectMetadata(String bucketName, String filename) throws IOException {
     File bucketDir = new File(root, bucketName);
-    assert bucketDir.exists();
+    assertThat(bucketDir).exists();
 
     File dataFile = new File(bucketDir, filename + DATA_FILE);
     if (!dataFile.exists()) {

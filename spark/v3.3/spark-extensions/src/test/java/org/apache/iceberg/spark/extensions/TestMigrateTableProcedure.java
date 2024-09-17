@@ -18,9 +18,10 @@
  */
 package org.apache.iceberg.spark.extensions;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 import java.io.IOException;
 import java.util.Map;
-import org.apache.iceberg.AssertHelpers;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
@@ -103,7 +104,7 @@ public class TestMigrateTableProcedure extends SparkExtensionsTestBase {
         ImmutableList.of(row(1L, "a"), row(1L, "a")),
         sql("SELECT * FROM %s ORDER BY id", tableName));
 
-    sql("DROP TABLE IF EXISTS  %s", tableName + "_BACKUP_");
+    sql("DROP TABLE IF EXISTS %s", tableName + "_BACKUP_");
   }
 
   @Test
@@ -131,14 +132,14 @@ public class TestMigrateTableProcedure extends SparkExtensionsTestBase {
         "CREATE TABLE %s (id bigint NOT NULL, data string) USING parquet LOCATION '%s'",
         tableName, location);
 
-    AssertHelpers.assertThrows(
-        "Should reject invalid metrics config",
-        ValidationException.class,
-        "Invalid metrics config",
-        () -> {
-          String props = "map('write.metadata.metrics.column.x', 'X')";
-          sql("CALL %s.system.migrate('%s', %s)", catalogName, tableName, props);
-        });
+    assertThatThrownBy(
+            () -> {
+              String props = "map('write.metadata.metrics.column.x', 'X')";
+              sql("CALL %s.system.migrate('%s', %s)", catalogName, tableName, props);
+            })
+        .as("Should reject invalid metrics config")
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("Invalid metrics config");
   }
 
   @Test
@@ -166,22 +167,58 @@ public class TestMigrateTableProcedure extends SparkExtensionsTestBase {
 
   @Test
   public void testInvalidMigrateCases() {
-    AssertHelpers.assertThrows(
-        "Should reject calls without all required args",
-        AnalysisException.class,
-        "Missing required parameters",
-        () -> sql("CALL %s.system.migrate()", catalogName));
+    assertThatThrownBy(() -> sql("CALL %s.system.migrate()", catalogName))
+        .as("Should reject calls without all required args")
+        .isInstanceOf(AnalysisException.class)
+        .hasMessageContaining("Missing required parameters");
 
-    AssertHelpers.assertThrows(
-        "Should reject calls with invalid arg types",
-        AnalysisException.class,
-        "Wrong arg type",
-        () -> sql("CALL %s.system.migrate(map('foo','bar'))", catalogName));
+    assertThatThrownBy(() -> sql("CALL %s.system.migrate(map('foo','bar'))", catalogName))
+        .as("Should reject calls with invalid arg types")
+        .isInstanceOf(AnalysisException.class)
+        .hasMessageContaining("Wrong arg type");
 
-    AssertHelpers.assertThrows(
-        "Should reject calls with empty table identifier",
-        IllegalArgumentException.class,
-        "Cannot handle an empty identifier",
-        () -> sql("CALL %s.system.migrate('')", catalogName));
+    assertThatThrownBy(() -> sql("CALL %s.system.migrate('')", catalogName))
+        .as("Should reject calls with empty table identifier")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Cannot handle an empty identifier");
+  }
+
+  @Test
+  public void testMigratePartitionWithSpecialCharacter() throws IOException {
+    Assume.assumeTrue(catalogName.equals("spark_catalog"));
+    String location = temp.newFolder().toString();
+    sql(
+        "CREATE TABLE %s (id bigint NOT NULL, data string, dt date) USING parquet "
+            + "PARTITIONED BY (data, dt) LOCATION '%s'",
+        tableName, location);
+    sql("INSERT INTO TABLE %s VALUES (1, '2023/05/30', date '2023-05-30')", tableName);
+    Object result = scalarSql("CALL %s.system.migrate('%s')", catalogName, tableName);
+
+    assertEquals(
+        "Should have expected rows",
+        ImmutableList.of(row(1L, "2023/05/30", java.sql.Date.valueOf("2023-05-30"))),
+        sql("SELECT * FROM %s ORDER BY id", tableName));
+  }
+
+  @Test
+  public void testMigrateEmptyPartitionedTable() throws Exception {
+    Assume.assumeTrue(catalogName.equals("spark_catalog"));
+    String location = temp.newFolder().toString();
+    sql(
+        "CREATE TABLE %s (id bigint NOT NULL, data string) USING parquet PARTITIONED BY (id) LOCATION '%s'",
+        tableName, location);
+    Object result = scalarSql("CALL %s.system.migrate('%s')", catalogName, tableName);
+    Assert.assertEquals(0L, result);
+  }
+
+  @Test
+  public void testMigrateEmptyTable() throws Exception {
+    Assume.assumeTrue(catalogName.equals("spark_catalog"));
+    String location = temp.newFolder().toString();
+    sql(
+        "CREATE TABLE %s (id bigint NOT NULL, data string) USING parquet LOCATION '%s'",
+        tableName, location);
+    Object result = scalarSql("CALL %s.system.migrate('%s')", catalogName, tableName);
+    Assert.assertEquals(0L, result);
   }
 }

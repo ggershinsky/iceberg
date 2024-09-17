@@ -31,7 +31,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
-import java.util.function.Predicate;
 import java.util.function.Supplier;
 import org.apache.iceberg.AllManifestsTable;
 import org.apache.iceberg.BaseTable;
@@ -44,7 +43,6 @@ import org.apache.iceberg.MetadataTableType;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.ReachableFileUtil;
 import org.apache.iceberg.StaticTableOperations;
-import org.apache.iceberg.StatisticsFile;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.exceptions.NotFoundException;
@@ -67,7 +65,6 @@ import org.apache.iceberg.spark.JobGroupUtils;
 import org.apache.iceberg.spark.SparkTableUtil;
 import org.apache.iceberg.spark.source.SerializableTableWithSize;
 import org.apache.iceberg.util.Tasks;
-import org.apache.spark.SparkContext;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.api.java.function.FlatMapFunction;
 import org.apache.spark.broadcast.Broadcast;
@@ -130,18 +127,11 @@ abstract class BaseSparkAction<ThisT> {
   }
 
   protected <T> T withJobGroupInfo(JobGroupInfo info, Supplier<T> supplier) {
-    SparkContext context = spark().sparkContext();
-    JobGroupInfo previousInfo = JobGroupUtils.getJobGroupInfo(context);
-    try {
-      JobGroupUtils.setJobGroupInfo(context, info);
-      return supplier.get();
-    } finally {
-      JobGroupUtils.setJobGroupInfo(context, previousInfo);
-    }
+    return JobGroupUtils.withJobGroupInfo(sparkContext, info, supplier);
   }
 
   protected JobGroupInfo newJobGroupInfo(String groupId, String desc) {
-    return new JobGroupInfo(groupId + "-" + JOB_COUNTER.incrementAndGet(), desc, false);
+    return new JobGroupInfo(groupId + "-" + JOB_COUNTER.incrementAndGet(), desc);
   }
 
   protected Table newStaticTable(TableMetadata metadata, FileIO io) {
@@ -165,6 +155,7 @@ abstract class BaseSparkAction<ThisT> {
                 "content",
                 "path",
                 "length",
+                "0 as sequenceNumber",
                 "partition_spec_id as partitionSpecId",
                 "added_snapshot_id as addedSnapshotId")
             .dropDuplicates("path")
@@ -204,14 +195,8 @@ abstract class BaseSparkAction<ThisT> {
   }
 
   protected Dataset<FileInfo> statisticsFileDS(Table table, Set<Long> snapshotIds) {
-    Predicate<StatisticsFile> predicate;
-    if (snapshotIds == null) {
-      predicate = statisticsFile -> true;
-    } else {
-      predicate = statisticsFile -> snapshotIds.contains(statisticsFile.snapshotId());
-    }
-
-    List<String> statisticsFiles = ReachableFileUtil.statisticsFilesLocations(table, predicate);
+    List<String> statisticsFiles =
+        ReachableFileUtil.statisticsFilesLocationsForSnapshots(table, snapshotIds);
     return toFileInfoDS(statisticsFiles, STATISTICS_FILES);
   }
 

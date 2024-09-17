@@ -18,17 +18,20 @@
  */
 package org.apache.iceberg.aws;
 
+import java.net.URI;
 import java.time.Duration;
 import java.util.Map;
 import org.apache.iceberg.relocated.com.google.common.annotations.VisibleForTesting;
 import org.apache.iceberg.util.PropertyUtil;
 import software.amazon.awssdk.awscore.client.builder.AwsSyncClientBuilder;
+import software.amazon.awssdk.http.urlconnection.ProxyConfiguration;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 
 class UrlConnectionHttpClientConfigurations {
 
   private Long httpClientUrlConnectionConnectionTimeoutMs;
   private Long httpClientUrlConnectionSocketTimeoutMs;
+  private String proxyEndpoint;
 
   private UrlConnectionHttpClientConfigurations() {}
 
@@ -42,10 +45,13 @@ class UrlConnectionHttpClientConfigurations {
   private void initialize(Map<String, String> httpClientProperties) {
     this.httpClientUrlConnectionConnectionTimeoutMs =
         PropertyUtil.propertyAsNullableLong(
-            httpClientProperties, AwsProperties.HTTP_CLIENT_URLCONNECTION_CONNECTION_TIMEOUT_MS);
+            httpClientProperties, HttpClientProperties.URLCONNECTION_CONNECTION_TIMEOUT_MS);
     this.httpClientUrlConnectionSocketTimeoutMs =
         PropertyUtil.propertyAsNullableLong(
-            httpClientProperties, AwsProperties.HTTP_CLIENT_URLCONNECTION_SOCKET_TIMEOUT_MS);
+            httpClientProperties, HttpClientProperties.URLCONNECTION_SOCKET_TIMEOUT_MS);
+    this.proxyEndpoint =
+        PropertyUtil.propertyAsString(
+            httpClientProperties, HttpClientProperties.PROXY_ENDPOINT, null);
   }
 
   @VisibleForTesting
@@ -58,6 +64,10 @@ class UrlConnectionHttpClientConfigurations {
     if (httpClientUrlConnectionSocketTimeoutMs != null) {
       urlConnectionHttpClientBuilder.socketTimeout(
           Duration.ofMillis(httpClientUrlConnectionSocketTimeoutMs));
+    }
+    if (proxyEndpoint != null) {
+      urlConnectionHttpClientBuilder.proxyConfiguration(
+          ProxyConfiguration.builder().endpoint(URI.create(proxyEndpoint)).build());
     }
   }
 

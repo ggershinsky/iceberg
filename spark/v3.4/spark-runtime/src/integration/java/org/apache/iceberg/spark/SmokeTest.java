@@ -18,6 +18,8 @@
  */
 package org.apache.iceberg.spark;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.io.IOException;
 import java.util.Map;
 import org.apache.iceberg.Table;
@@ -52,7 +54,7 @@ public class SmokeTest extends SparkExtensionsTestBase {
     Assert.assertEquals(
         "Should have inserted 3 rows", 3L, scalarSql("SELECT COUNT(*) FROM %s", tableName));
 
-    sql("DROP TABLE IF EXISTS source");
+    sql("DROP TABLE IF EXISTS source PURGE");
     sql(
         "CREATE TABLE source (id bigint, data string) USING parquet LOCATION '%s'",
         temp.newFolder());
@@ -62,7 +64,7 @@ public class SmokeTest extends SparkExtensionsTestBase {
     Assert.assertEquals(
         "Table should now have 4 rows", 4L, scalarSql("SELECT COUNT(*) FROM %s", tableName));
 
-    sql("DROP TABLE IF EXISTS updates");
+    sql("DROP TABLE IF EXISTS updates PURGE");
     sql(
         "CREATE TABLE updates (id bigint, data string) USING parquet LOCATION '%s'",
         temp.newFolder());
@@ -101,7 +103,7 @@ public class SmokeTest extends SparkExtensionsTestBase {
     sql(
         "CREATE TABLE %s (category int, id bigint, data string, ts timestamp) USING iceberg",
         tableName);
-    Table table = getTable();
+    Table table;
     // Add examples
     sql("ALTER TABLE %s ADD PARTITION FIELD bucket(16, id)", tableName);
     sql("ALTER TABLE %s ADD PARTITION FIELD truncate(data, 4)", tableName);
@@ -117,11 +119,7 @@ public class SmokeTest extends SparkExtensionsTestBase {
     sql("ALTER TABLE %s DROP PARTITION FIELD shard", tableName);
 
     table = getTable();
-    Assert.assertEquals("Table should have 4 partition fields", 4, table.spec().fields().size());
-    // VoidTransform is package private so we can't reach it here, just checking name
-    Assert.assertTrue(
-        "All transforms should be void",
-        table.spec().fields().stream().allMatch(pf -> pf.transform().toString().equals("void")));
+    Assert.assertTrue("Table should be unpartitioned", table.spec().isUnpartitioned());
 
     // Sort order examples
     sql("ALTER TABLE %s WRITE ORDERED BY category, id", tableName);
@@ -167,6 +165,13 @@ public class SmokeTest extends SparkExtensionsTestBase {
         tableName("third"));
     Table third = getTable("third");
     Assert.assertEquals("Should be partitioned on 3 columns", 3, third.spec().fields().size());
+  }
+
+  @Test
+  public void showView() {
+    sql("DROP VIEW IF EXISTS %s", "test");
+    sql("CREATE VIEW %s AS SELECT 1 AS id", "test");
+    assertThat(sql("SHOW VIEWS")).contains(row("default", "test", false));
   }
 
   private Table getTable(String name) {

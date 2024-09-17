@@ -40,7 +40,7 @@ import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.SnapshotSummary;
 import org.apache.iceberg.SnapshotUpdate;
 import org.apache.iceberg.Table;
-import org.apache.iceberg.exceptions.CommitStateUnknownException;
+import org.apache.iceberg.exceptions.CleanableFailure;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.io.ClusteredDataWriter;
@@ -100,8 +100,9 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
   private final Map<String, String> extraSnapshotMetadata;
   private final boolean partitionedFanoutEnabled;
   private final SparkWriteRequirements writeRequirements;
+  private final Map<String, String> writeProperties;
 
-  private boolean cleanupOnAbort = true;
+  private boolean cleanupOnAbort = false;
 
   SparkWrite(
       SparkSession spark,
@@ -128,6 +129,7 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
     this.partitionedFanoutEnabled = writeConf.fanoutWriterEnabled();
     this.writeRequirements = writeRequirements;
     this.outputSpecId = writeConf.outputSpecId();
+    this.writeProperties = writeConf.writeProperties();
   }
 
   @Override
@@ -186,7 +188,8 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
         targetFileSize,
         writeSchema,
         dsSchema,
-        partitionedFanoutEnabled);
+        partitionedFanoutEnabled,
+        writeProperties);
   }
 
   private void commitOperation(SnapshotUpdate<?> operation, String description) {
@@ -219,9 +222,9 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
       operation.commit(); // abort is automatically called if this fails
       long duration = System.currentTimeMillis() - start;
       LOG.info("Committed in {} ms", duration);
-    } catch (CommitStateUnknownException commitStateUnknownException) {
-      cleanupOnAbort = false;
-      throw commitStateUnknownException;
+    } catch (Exception e) {
+      cleanupOnAbort = e instanceof CleanableFailure;
+      throw e;
     }
   }
 
@@ -255,6 +258,11 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
     @Override
     public DataWriterFactory createBatchWriterFactory(PhysicalWriteInfo info) {
       return createWriterFactory();
+    }
+
+    @Override
+    public boolean useCommitCoordinator() {
+      return false;
     }
 
     @Override
@@ -616,6 +624,7 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
     private final StructType dsSchema;
     private final boolean partitionedFanoutEnabled;
     private final String queryId;
+    private final Map<String, String> writeProperties;
 
     protected WriterFactory(
         Broadcast<Table> tableBroadcast,
@@ -625,7 +634,8 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
         long targetFileSize,
         Schema writeSchema,
         StructType dsSchema,
-        boolean partitionedFanoutEnabled) {
+        boolean partitionedFanoutEnabled,
+        Map<String, String> writeProperties) {
       this.tableBroadcast = tableBroadcast;
       this.format = format;
       this.outputSpecId = outputSpecId;
@@ -634,6 +644,7 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
       this.dsSchema = dsSchema;
       this.partitionedFanoutEnabled = partitionedFanoutEnabled;
       this.queryId = queryId;
+      this.writeProperties = writeProperties;
     }
 
     @Override
@@ -646,17 +657,18 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
       Table table = tableBroadcast.value();
       PartitionSpec spec = table.specs().get(outputSpecId);
       FileIO io = table.io();
-
+      String operationId = queryId + "-" + epochId;
       OutputFileFactory fileFactory =
           OutputFileFactory.builderFor(table, partitionId, taskId)
               .format(format)
-              .operationId(queryId)
+              .operationId(operationId)
               .build();
       SparkFileWriterFactory writerFactory =
           SparkFileWriterFactory.builderFor(table)
               .dataFileFormat(format)
               .dataSchema(writeSchema)
               .dataSparkType(dsSchema)
+              .writeProperties(writeProperties)
               .build();
 
       if (spec.isUnpartitioned()) {
@@ -744,7 +756,7 @@ abstract class SparkWrite implements Write, RequiresDistributionAndOrdering {
       this.io = io;
       this.spec = spec;
       this.partitionKey = new PartitionKey(spec, dataSchema);
-      this.internalRowWrapper = new InternalRowWrapper(dataSparkType);
+      this.internalRowWrapper = new InternalRowWrapper(dataSparkType, dataSchema.asStruct());
     }
 
     @Override
