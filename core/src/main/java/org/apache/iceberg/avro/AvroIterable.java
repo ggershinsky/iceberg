@@ -31,6 +31,7 @@ import org.apache.iceberg.io.CloseableGroup;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.CloseableIterator;
 import org.apache.iceberg.io.InputFile;
+import org.apache.iceberg.relocated.com.google.common.base.Suppliers;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
 public class AvroIterable<D> extends CloseableGroup implements CloseableIterable<D> {
@@ -65,7 +66,7 @@ public class AvroIterable<D> extends CloseableGroup implements CloseableIterable
       try (DataFileReader<D> reader = newFileReader()) {
         initMetadata(reader);
       } catch (IOException e) {
-        throw new RuntimeIOException(e, "Failed to read metadata for file: %s", file);
+        throw new RuntimeIOException(e, "Failed to read metadata for file: %s", file.location());
       }
     }
     return metadata;
@@ -78,7 +79,8 @@ public class AvroIterable<D> extends CloseableGroup implements CloseableIterable
     if (start != null) {
       if (reader instanceof SupportsRowPosition) {
         ((SupportsRowPosition) reader)
-            .setRowPositionSupplier(() -> AvroIO.findStartingRowPos(file::newStream, start));
+            .setRowPositionSupplier(
+                Suppliers.memoize(() -> AvroIO.findStartingRowPos(file::newStream, start)));
       }
       fileReader = new AvroRangeIterator<>(fileReader, start, end);
     } else if (reader instanceof SupportsRowPosition) {
@@ -99,7 +101,7 @@ public class AvroIterable<D> extends CloseableGroup implements CloseableIterable
       return (DataFileReader<D>)
           DataFileReader.openReader(AvroIO.stream(file.newStream(), file.getLength()), reader);
     } catch (IOException e) {
-      throw new RuntimeIOException(e, "Failed to open file: %s", file);
+      throw new RuntimeIOException(e, "Failed to open file: %s", file.location());
     }
   }
 

@@ -18,6 +18,8 @@
  */
 package org.apache.iceberg;
 
+import java.io.Closeable;
+import java.io.IOException;
 import java.util.Map;
 import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.catalog.TableIdentifier;
@@ -34,7 +36,7 @@ import org.apache.iceberg.util.PropertyUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public abstract class BaseMetastoreCatalog implements Catalog {
+public abstract class BaseMetastoreCatalog implements Catalog, Closeable {
   private static final Logger LOG = LoggerFactory.getLogger(BaseMetastoreCatalog.class);
 
   private MetricsReporter metricsReporter;
@@ -83,7 +85,7 @@ public abstract class BaseMetastoreCatalog implements Catalog {
 
     TableOperations ops = newTableOps(identifier);
     InputFile metadataFile = ops.io().newInputFile(metadataFileLocation);
-    TableMetadata metadata = TableMetadataParser.read(ops.io(), metadataFile);
+    TableMetadata metadata = TableMetadataParser.read(metadataFile);
     ops.commit(null, metadata);
 
     return new BaseTable(ops, fullTableName(name(), identifier), metricsReporter());
@@ -111,7 +113,7 @@ public abstract class BaseMetastoreCatalog implements Catalog {
     }
   }
 
-  private boolean isValidMetadataIdentifier(TableIdentifier identifier) {
+  protected boolean isValidMetadataIdentifier(TableIdentifier identifier) {
     return MetadataTableType.from(identifier.name()) != null
         && isValidIdentifier(TableIdentifier.of(identifier.namespace().levels()));
   }
@@ -215,7 +217,8 @@ public abstract class BaseMetastoreCatalog implements Catalog {
       tableProperties.putAll(tableOverrideProperties());
       TableMetadata metadata =
           TableMetadata.newTableMetadata(schema, spec, sortOrder, baseLocation, tableProperties);
-      return Transactions.createTableTransaction(identifier.toString(), ops, metadata);
+      return Transactions.createTableTransaction(
+          identifier.toString(), ops, metadata, metricsReporter());
     }
 
     @Override
@@ -247,9 +250,11 @@ public abstract class BaseMetastoreCatalog implements Catalog {
       }
 
       if (orCreate) {
-        return Transactions.createOrReplaceTableTransaction(identifier.toString(), ops, metadata);
+        return Transactions.createOrReplaceTableTransaction(
+            identifier.toString(), ops, metadata, metricsReporter());
       } else {
-        return Transactions.replaceTableTransaction(identifier.toString(), ops, metadata);
+        return Transactions.replaceTableTransaction(
+            identifier.toString(), ops, metadata, metricsReporter());
       }
     }
 
@@ -283,33 +288,21 @@ public abstract class BaseMetastoreCatalog implements Catalog {
   }
 
   protected static String fullTableName(String catalogName, TableIdentifier identifier) {
-    StringBuilder sb = new StringBuilder();
-
-    if (catalogName.contains("/") || catalogName.contains(":")) {
-      // use / for URI-like names: thrift://host:port/db.table
-      sb.append(catalogName);
-      if (!catalogName.endsWith("/")) {
-        sb.append("/");
-      }
-    } else {
-      // use . for non-URI named catalogs: prod.db.table
-      sb.append(catalogName).append(".");
-    }
-
-    for (String level : identifier.namespace().levels()) {
-      sb.append(level).append(".");
-    }
-
-    sb.append(identifier.name());
-
-    return sb.toString();
+    return CatalogUtil.fullTableName(catalogName, identifier);
   }
 
-  private MetricsReporter metricsReporter() {
+  protected MetricsReporter metricsReporter() {
     if (metricsReporter == null) {
       metricsReporter = CatalogUtil.loadMetricsReporter(properties());
     }
 
     return metricsReporter;
+  }
+
+  @Override
+  public void close() throws IOException {
+    if (metricsReporter != null) {
+      metricsReporter.close();
+    }
   }
 }

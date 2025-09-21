@@ -37,6 +37,7 @@ import static org.apache.iceberg.types.Conversions.toByteBuffer;
 import static org.apache.iceberg.types.Types.NestedField.optional;
 import static org.apache.iceberg.types.Types.NestedField.required;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.Schema;
@@ -47,7 +48,6 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.types.Types.IntegerType;
 import org.apache.iceberg.types.Types.StringType;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 public class TestStrictMetricsEvaluator {
@@ -66,7 +66,14 @@ public class TestStrictMetricsEvaluator {
           optional(11, "all_nulls_double", Types.DoubleType.get()),
           optional(12, "all_nans_v1_stats", Types.FloatType.get()),
           optional(13, "nan_and_null_only", Types.DoubleType.get()),
-          optional(14, "no_nan_stats", Types.DoubleType.get()));
+          optional(14, "no_nan_stats", Types.DoubleType.get()),
+          optional(
+              15,
+              "struct",
+              Types.StructType.of(
+                  Types.NestedField.optional(16, "nested_col_no_stats", Types.IntegerType.get()),
+                  Types.NestedField.optional(
+                      17, "nested_col_with_stats", Types.IntegerType.get()))));
 
   private static final int INT_MIN_VALUE = 30;
   private static final int INT_MAX_VALUE = 79;
@@ -88,6 +95,7 @@ public class TestStrictMetricsEvaluator {
               .put(12, 50L)
               .put(13, 50L)
               .put(14, 50L)
+              .put(17, 50L)
               .buildOrThrow(),
           // null value counts
           ImmutableMap.<Integer, Long>builder()
@@ -97,6 +105,7 @@ public class TestStrictMetricsEvaluator {
               .put(11, 50L)
               .put(12, 0L)
               .put(13, 1L)
+              .put(17, 0L)
               .buildOrThrow(),
           // nan value counts
           ImmutableMap.of(
@@ -108,13 +117,15 @@ public class TestStrictMetricsEvaluator {
               1, toByteBuffer(IntegerType.get(), INT_MIN_VALUE),
               7, toByteBuffer(IntegerType.get(), 5),
               12, toByteBuffer(Types.FloatType.get(), Float.NaN),
-              13, toByteBuffer(Types.DoubleType.get(), Double.NaN)),
+              13, toByteBuffer(Types.DoubleType.get(), Double.NaN),
+              17, toByteBuffer(Types.IntegerType.get(), INT_MIN_VALUE)),
           // upper bounds
           ImmutableMap.of(
               1, toByteBuffer(IntegerType.get(), INT_MAX_VALUE),
               7, toByteBuffer(IntegerType.get(), 5),
               12, toByteBuffer(Types.FloatType.get(), Float.NaN),
-              13, toByteBuffer(Types.DoubleType.get(), Double.NaN)));
+              13, toByteBuffer(Types.DoubleType.get(), Double.NaN),
+              17, toByteBuffer(IntegerType.get(), INT_MAX_VALUE)));
 
   private static final DataFile FILE_2 =
       new TestDataFile(
@@ -280,8 +291,7 @@ public class TestStrictMetricsEvaluator {
 
   @Test
   public void testMissingColumn() {
-    Assertions.assertThatThrownBy(
-            () -> new StrictMetricsEvaluator(SCHEMA, lessThan("missing", 5)).eval(FILE))
+    assertThatThrownBy(() -> new StrictMetricsEvaluator(SCHEMA, lessThan("missing", 5)).eval(FILE))
         .isInstanceOf(ValidationException.class)
         .hasMessageContaining("Cannot find field 'missing'");
   }
@@ -592,7 +602,7 @@ public class TestStrictMetricsEvaluator {
     boolean shouldRead =
         new StrictMetricsEvaluator(SCHEMA, notIn("id", INT_MIN_VALUE - 25, INT_MIN_VALUE - 24))
             .eval(FILE);
-    assertThat(shouldRead).as("Should not match: all values !=5 and !=6").isTrue();
+    assertThat(shouldRead).as("Should match: all values !=5 and !=6").isTrue();
 
     shouldRead =
         new StrictMetricsEvaluator(SCHEMA, notIn("id", INT_MIN_VALUE - 1, INT_MIN_VALUE))
@@ -627,5 +637,51 @@ public class TestStrictMetricsEvaluator {
 
     shouldRead = new StrictMetricsEvaluator(SCHEMA, notIn("no_nulls", "abc", "def")).eval(FILE);
     assertThat(shouldRead).as("Should not match: no_nulls field does not have bounds").isFalse();
+  }
+
+  @Test
+  public void testEvaluateOnNestedColumnWithoutStats() {
+    boolean shouldRead =
+        new StrictMetricsEvaluator(
+                SCHEMA, greaterThanOrEqual("struct.nested_col_no_stats", INT_MIN_VALUE))
+            .eval(FILE);
+    assertThat(shouldRead).as("greaterThanOrEqual nested column should not match").isFalse();
+
+    shouldRead =
+        new StrictMetricsEvaluator(
+                SCHEMA, lessThanOrEqual("struct.nested_col_no_stats", INT_MAX_VALUE))
+            .eval(FILE);
+    assertThat(shouldRead).as("lessThanOrEqual nested column should not match").isFalse();
+
+    shouldRead =
+        new StrictMetricsEvaluator(SCHEMA, isNull("struct.nested_col_no_stats")).eval(FILE);
+    assertThat(shouldRead).as("isNull nested column should not match").isFalse();
+
+    shouldRead =
+        new StrictMetricsEvaluator(SCHEMA, notNull("struct.nested_col_no_stats")).eval(FILE);
+    assertThat(shouldRead).as("notNull nested column should not match").isFalse();
+  }
+
+  @Test
+  public void testEvaluateOnNestedColumnWithStats() {
+    boolean shouldRead =
+        new StrictMetricsEvaluator(
+                SCHEMA, greaterThanOrEqual("struct.nested_col_with_stats", INT_MIN_VALUE))
+            .eval(FILE);
+    assertThat(shouldRead).as("greaterThanOrEqual nested column should not match").isFalse();
+
+    shouldRead =
+        new StrictMetricsEvaluator(
+                SCHEMA, lessThanOrEqual("struct.nested_col_with_stats", INT_MAX_VALUE))
+            .eval(FILE);
+    assertThat(shouldRead).as("lessThanOrEqual nested column should not match").isFalse();
+
+    shouldRead =
+        new StrictMetricsEvaluator(SCHEMA, isNull("struct.nested_col_with_stats")).eval(FILE);
+    assertThat(shouldRead).as("isNull nested column should not match").isFalse();
+
+    shouldRead =
+        new StrictMetricsEvaluator(SCHEMA, notNull("struct.nested_col_with_stats")).eval(FILE);
+    assertThat(shouldRead).as("notNull nested column should not match").isFalse();
   }
 }

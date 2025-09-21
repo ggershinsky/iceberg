@@ -20,23 +20,25 @@ package org.apache.iceberg.data;
 
 import java.io.File;
 import java.io.IOException;
+import org.apache.iceberg.ParameterizedTestExtension;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TestTables;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
+import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.StructLikeSet;
-import org.junit.Assert;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 
+@ExtendWith(ParameterizedTestExtension.class)
 public class TestGenericReaderDeletes extends DeleteReadTests {
+  @TempDir private File tableDir;
 
   @Override
   protected Table createTable(String name, Schema schema, PartitionSpec spec) throws IOException {
-    File tableDir = temp.newFolder();
-    Assert.assertTrue(tableDir.delete());
-
-    return TestTables.create(tableDir, name, schema, spec, 2);
+    return TestTables.create(tableDir, name, schema, spec, formatVersion);
   }
 
   @Override
@@ -46,12 +48,13 @@ public class TestGenericReaderDeletes extends DeleteReadTests {
 
   @Override
   public StructLikeSet rowSet(String name, Table table, String... columns) throws IOException {
-    StructLikeSet set = StructLikeSet.create(table.schema().asStruct());
+    Types.StructType schema = table.schema().select(columns).asStruct();
+    StructLikeSet set = StructLikeSet.create(schema);
     try (CloseableIterable<Record> reader = IcebergGenerics.read(table).select(columns).build()) {
       Iterables.addAll(
           set,
           CloseableIterable.transform(
-              reader, record -> new InternalRecordWrapper(table.schema().asStruct()).wrap(record)));
+              reader, record -> new InternalRecordWrapper(schema).wrap(record)));
     }
     return set;
   }

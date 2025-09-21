@@ -26,48 +26,44 @@ import org.apache.iceberg.io.SeekableInputStream;
 import org.apache.iceberg.metrics.MetricsContext;
 
 class GCSInputFile extends BaseGCSFile implements InputFile {
-  private Long length;
+  private Long blobSize;
 
   static GCSInputFile fromLocation(
-      String location, Storage storage, GCPProperties gcpProperties, MetricsContext metrics) {
-    return new GCSInputFile(storage, BlobId.fromGsUtilUri(location), null, gcpProperties, metrics);
+      String location, PrefixedStorage storage, MetricsContext metrics) {
+    return fromLocation(location, 0L, storage, metrics);
   }
 
   static GCSInputFile fromLocation(
-      String location,
-      long length,
-      Storage storage,
-      GCPProperties gcpProperties,
-      MetricsContext metrics) {
+      String location, long length, PrefixedStorage storage, MetricsContext metrics) {
     return new GCSInputFile(
-        storage,
+        storage.storage(),
         BlobId.fromGsUtilUri(location),
         length > 0 ? length : null,
-        gcpProperties,
+        storage.gcpProperties(),
         metrics);
   }
 
   GCSInputFile(
       Storage storage,
       BlobId blobId,
-      Long length,
+      Long blobSize,
       GCPProperties gcpProperties,
       MetricsContext metrics) {
     super(storage, blobId, gcpProperties, metrics);
-    this.length = length;
+    this.blobSize = blobSize;
   }
 
   @Override
   public long getLength() {
-    if (length == null) {
-      this.length = getBlob().getSize();
+    if (blobSize == null) {
+      this.blobSize = getBlob().getSize();
     }
 
-    return length;
+    return blobSize;
   }
 
   @Override
   public SeekableInputStream newStream() {
-    return new GCSInputStream(storage(), blobId(), gcpProperties(), metrics());
+    return new GCSInputStream(storage(), blobId(), blobSize, gcpProperties(), metrics());
   }
 }

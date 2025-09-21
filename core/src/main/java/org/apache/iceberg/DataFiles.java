@@ -29,6 +29,7 @@ import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.types.Conversions;
+import org.apache.iceberg.types.Type;
 import org.apache.iceberg.util.ByteBuffers;
 
 public class DataFiles {
@@ -89,6 +90,26 @@ public class DataFiles {
     return data;
   }
 
+  static PartitionData fillFromValues(
+      PartitionSpec spec, List<String> partitionValues, PartitionData reuse) {
+    PartitionData data = reuse;
+    if (data == null) {
+      data = newPartitionData(spec);
+    }
+
+    Preconditions.checkArgument(
+        partitionValues.size() == spec.fields().size(),
+        "Invalid partition data, expecting %s fields, found %s",
+        spec.fields().size(),
+        partitionValues.size());
+
+    for (int i = 0; i < partitionValues.size(); i += 1) {
+      data.set(i, Conversions.fromPartitionString(data.getType(i), partitionValues.get(i)));
+    }
+
+    return data;
+  }
+
   public static PartitionData data(PartitionSpec spec, String partitionPath) {
     return fillFromPath(spec, partitionPath, null);
   }
@@ -123,7 +144,6 @@ public class DataFiles {
     private FileFormat format = null;
     private long recordCount = -1L;
     private long fileSizeInBytes = -1L;
-    private Integer sortOrderId = SortOrder.unsorted().orderId();
 
     // optional fields
     private Map<Integer, Long> columnSizes = null;
@@ -132,8 +152,11 @@ public class DataFiles {
     private Map<Integer, Long> nanValueCounts = null;
     private Map<Integer, ByteBuffer> lowerBounds = null;
     private Map<Integer, ByteBuffer> upperBounds = null;
+    private Map<Integer, Type> originalTypes = null;
     private ByteBuffer keyMetadata = null;
     private List<Long> splitOffsets = null;
+    private Integer sortOrderId = SortOrder.unsorted().orderId();
+    private Long firstRowId = null;
 
     public Builder(PartitionSpec spec) {
       this.spec = spec;
@@ -158,6 +181,7 @@ public class DataFiles {
       this.upperBounds = null;
       this.splitOffsets = null;
       this.sortOrderId = SortOrder.unsorted().orderId();
+      this.firstRowId = null;
     }
 
     public Builder copy(DataFile toCopy) {
@@ -166,7 +190,7 @@ public class DataFiles {
             specId == toCopy.specId(), "Cannot copy a DataFile with a different spec");
         this.partitionData = copyPartitionData(spec, toCopy.partition(), partitionData);
       }
-      this.filePath = toCopy.path().toString();
+      this.filePath = toCopy.location();
       this.format = toCopy.format();
       this.recordCount = toCopy.recordCount();
       this.fileSizeInBytes = toCopy.fileSizeInBytes();
@@ -181,6 +205,7 @@ public class DataFiles {
       this.splitOffsets =
           toCopy.splitOffsets() == null ? null : ImmutableList.copyOf(toCopy.splitOffsets());
       this.sortOrderId = toCopy.sortOrderId();
+      this.firstRowId = toCopy.firstRowId();
       return this;
     }
 
@@ -248,6 +273,16 @@ public class DataFiles {
       return this;
     }
 
+    public Builder withPartitionValues(List<String> partitionValues) {
+      Preconditions.checkArgument(
+          isPartitioned ^ partitionValues.isEmpty(),
+          "Table must be partitioned or partition values must be empty");
+      if (!partitionValues.isEmpty()) {
+        this.partitionData = fillFromValues(spec, partitionValues, partitionData);
+      }
+      return this;
+    }
+
     public Builder withMetrics(Metrics metrics) {
       // check for null to avoid NPE when unboxing
       this.recordCount = metrics.recordCount() == null ? -1 : metrics.recordCount();
@@ -257,6 +292,7 @@ public class DataFiles {
       this.nanValueCounts = metrics.nanValueCounts();
       this.lowerBounds = metrics.lowerBounds();
       this.upperBounds = metrics.upperBounds();
+      this.originalTypes = metrics.originalTypes();
       return this;
     }
 
@@ -285,6 +321,11 @@ public class DataFiles {
       return this;
     }
 
+    public Builder withFirstRowId(Long nextRowId) {
+      this.firstRowId = nextRowId;
+      return this;
+    }
+
     public DataFile build() {
       Preconditions.checkArgument(filePath != null, "File path is required");
       if (format == null) {
@@ -307,10 +348,12 @@ public class DataFiles {
               nullValueCounts,
               nanValueCounts,
               lowerBounds,
-              upperBounds),
+              upperBounds,
+              originalTypes),
           keyMetadata,
           splitOffsets,
-          sortOrderId);
+          sortOrderId,
+          firstRowId);
     }
   }
 }

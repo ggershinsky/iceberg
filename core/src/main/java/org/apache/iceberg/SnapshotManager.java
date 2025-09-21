@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg;
 
+import org.apache.iceberg.metrics.MetricsReporter;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 
 public class SnapshotManager implements ManageSnapshots {
@@ -26,11 +27,12 @@ public class SnapshotManager implements ManageSnapshots {
   private final BaseTransaction transaction;
   private UpdateSnapshotReferencesOperation updateSnapshotReferencesOperation;
 
-  SnapshotManager(String tableName, TableOperations ops) {
+  SnapshotManager(String tableName, TableOperations ops, MetricsReporter reporter) {
     Preconditions.checkState(
         ops.current() != null, "Cannot manage snapshots: table %s does not exist", tableName);
     this.transaction =
-        new BaseTransaction(tableName, ops, BaseTransaction.TransactionType.SIMPLE, ops.refresh());
+        new BaseTransaction(
+            tableName, ops, BaseTransaction.TransactionType.SIMPLE, ops.refresh(), reporter);
     this.isExternalTransaction = false;
   }
 
@@ -65,6 +67,20 @@ public class SnapshotManager implements ManageSnapshots {
   public ManageSnapshots rollbackTo(long snapshotId) {
     commitIfRefUpdatesExist();
     transaction.setBranchSnapshot().rollbackTo(snapshotId).commit();
+    return this;
+  }
+
+  @Override
+  public ManageSnapshots createBranch(String name) {
+    Snapshot currentSnapshot = transaction.currentMetadata().currentSnapshot();
+    if (currentSnapshot != null) {
+      return createBranch(name, currentSnapshot.snapshotId());
+    }
+
+    SnapshotRef existingRef = transaction.currentMetadata().ref(name);
+    Preconditions.checkArgument(existingRef == null, "Ref %s already exists", name);
+    // Create an empty snapshot for the branch
+    transaction.newFastAppend().toBranch(name).commit();
     return this;
   }
 
@@ -123,14 +139,14 @@ public class SnapshotManager implements ManageSnapshots {
   }
 
   @Override
-  public ManageSnapshots replaceBranch(String name, String source) {
-    updateSnapshotReferencesOperation().replaceBranch(name, source);
+  public ManageSnapshots replaceBranch(String from, String to) {
+    updateSnapshotReferencesOperation().replaceBranch(from, to);
     return this;
   }
 
   @Override
-  public ManageSnapshots fastForwardBranch(String name, String source) {
-    updateSnapshotReferencesOperation().fastForward(name, source);
+  public ManageSnapshots fastForwardBranch(String from, String to) {
+    updateSnapshotReferencesOperation().fastForward(from, to);
     return this;
   }
 

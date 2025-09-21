@@ -24,9 +24,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
+import java.util.stream.Collectors;
 import org.apache.iceberg.expressions.Binder;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.Expressions;
+import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.metrics.MetricsReporter;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
@@ -47,7 +49,8 @@ abstract class BaseScan<ThisT, T extends ScanTask, G extends ScanTaskGroup<T>>
           "record_count",
           "partition",
           "key_metadata",
-          "split_offsets");
+          "split_offsets",
+          "sort_order_id");
 
   private static final List<String> STATS_COLUMNS =
       ImmutableList.of(
@@ -58,7 +61,7 @@ abstract class BaseScan<ThisT, T extends ScanTask, G extends ScanTaskGroup<T>>
           "upper_bounds",
           "column_sizes");
 
-  private static final List<String> SCAN_WITH_STATS_COLUMNS =
+  protected static final List<String> SCAN_WITH_STATS_COLUMNS =
       ImmutableList.<String>builder().addAll(SCAN_COLUMNS).addAll(STATS_COLUMNS).build();
 
   protected static final List<String> DELETE_SCAN_COLUMNS =
@@ -73,12 +76,16 @@ abstract class BaseScan<ThisT, T extends ScanTask, G extends ScanTaskGroup<T>>
           "record_count",
           "partition",
           "key_metadata",
-          "split_offsets");
+          "split_offsets",
+          "referenced_data_file",
+          "content_offset",
+          "content_size_in_bytes",
+          "equality_ids");
 
   protected static final List<String> DELETE_SCAN_WITH_STATS_COLUMNS =
       ImmutableList.<String>builder().addAll(DELETE_SCAN_COLUMNS).addAll(STATS_COLUMNS).build();
 
-  private static final boolean PLAN_SCANS_WITH_WORKER_POOL =
+  protected static final boolean PLAN_SCANS_WITH_WORKER_POOL =
       SystemConfigs.SCAN_THREAD_POOL_ENABLED.value();
 
   private final Table table;
@@ -93,6 +100,10 @@ abstract class BaseScan<ThisT, T extends ScanTask, G extends ScanTaskGroup<T>>
 
   public Table table() {
     return table;
+  }
+
+  protected FileIO io() {
+    return table.io();
   }
 
   protected Schema tableSchema() {
@@ -111,8 +122,20 @@ abstract class BaseScan<ThisT, T extends ScanTask, G extends ScanTaskGroup<T>>
     return context.returnColumnStats() ? SCAN_WITH_STATS_COLUMNS : SCAN_COLUMNS;
   }
 
+  protected boolean shouldReturnColumnStats() {
+    return context().returnColumnStats();
+  }
+
+  protected Set<Integer> columnsToKeepStats() {
+    return context().columnsToKeepStats();
+  }
+
   protected boolean shouldIgnoreResiduals() {
     return context().ignoreResiduals();
+  }
+
+  protected Expression residualFilter() {
+    return shouldIgnoreResiduals() ? Expressions.alwaysTrue() : filter();
   }
 
   protected boolean shouldPlanWithExecutor() {
@@ -149,6 +172,19 @@ abstract class BaseScan<ThisT, T extends ScanTask, G extends ScanTaskGroup<T>>
   @Override
   public ThisT includeColumnStats() {
     return newRefinedScan(table, schema, context.shouldReturnColumnStats(true));
+  }
+
+  @Override
+  public ThisT includeColumnStats(Collection<String> requestedColumns) {
+    return newRefinedScan(
+        table,
+        schema,
+        context
+            .shouldReturnColumnStats(true)
+            .columnsToKeepStats(
+                requestedColumns.stream()
+                    .map(c -> schema.findField(c).fieldId())
+                    .collect(Collectors.toSet())));
   }
 
   @Override
@@ -254,6 +290,23 @@ abstract class BaseScan<ThisT, T extends ScanTask, G extends ScanTaskGroup<T>>
 
   @Override
   public ThisT metricsReporter(MetricsReporter reporter) {
-    return newRefinedScan(table(), schema(), context().reportWith(reporter));
+    return newRefinedScan(table, schema, context.reportWith(reporter));
+  }
+
+  /**
+   * Retrieves a list of column names based on the type of manifest content provided.
+   *
+   * @param content the manifest content type to scan.
+   * @return a list of column names corresponding to the specified manifest content type.
+   */
+  static List<String> scanColumns(ManifestContent content) {
+    switch (content) {
+      case DATA:
+        return BaseScan.SCAN_COLUMNS;
+      case DELETES:
+        return BaseScan.DELETE_SCAN_COLUMNS;
+      default:
+        throw new UnsupportedOperationException("Cannot read unknown manifest type: " + content);
+    }
   }
 }

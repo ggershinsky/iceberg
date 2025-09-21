@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.expressions;
 
+import java.util.Locale;
 import org.apache.iceberg.Accessor;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.types.Type;
@@ -55,6 +56,13 @@ public class BoundReference<T> implements BoundTerm<T>, Reference<T> {
   }
 
   @Override
+  public boolean producesNull() {
+    // A leaf required field can evaluate to null if it is optional itself or any
+    // ancestor on the path is optional.
+    return accessor.hasOptionalFieldInPath();
+  }
+
+  @Override
   public String name() {
     return name;
   }
@@ -82,6 +90,7 @@ public class BoundReference<T> implements BoundTerm<T>, Reference<T> {
 
   @Override
   public String toString() {
-    return String.format("ref(id=%d, accessor-type=%s)", field.fieldId(), accessor.type());
+    return String.format(
+        Locale.ROOT, "ref(id=%d, accessor-type=%s)", field.fieldId(), accessor.type());
   }
 }

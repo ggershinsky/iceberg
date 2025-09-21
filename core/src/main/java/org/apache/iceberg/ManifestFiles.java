@@ -25,6 +25,8 @@ import java.util.Map;
 import org.apache.iceberg.ManifestReader.FileType;
 import org.apache.iceberg.avro.AvroEncoderUtil;
 import org.apache.iceberg.avro.AvroSchemaUtil;
+import org.apache.iceberg.encryption.EncryptedFiles;
+import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.ContentCache;
@@ -79,7 +81,7 @@ public class ManifestFiles {
   }
 
   /** Drop manifest file cache object for a FileIO if exists. */
-  public static synchronized void dropCache(FileIO fileIO) {
+  public static void dropCache(FileIO fileIO) {
     CONTENT_CACHES.invalidate(fileIO);
     CONTENT_CACHES.cleanUp();
   }
@@ -94,7 +96,7 @@ public class ManifestFiles {
   public static CloseableIterable<String> readPaths(ManifestFile manifest, FileIO io) {
     return CloseableIterable.transform(
         read(manifest, io, null).select(ImmutableList.of("file_path")).liveEntries(),
-        entry -> entry.file().path().toString());
+        entry -> entry.file().location());
   }
 
   /**
@@ -126,10 +128,15 @@ public class ManifestFiles {
         manifest.content() == ManifestContent.DATA,
         "Cannot read a delete manifest with a ManifestReader: %s",
         manifest);
-    InputFile file = newInputFile(io, manifest.path(), manifest.length());
+    InputFile file = newInputFile(io, manifest);
     InheritableMetadata inheritableMetadata = InheritableMetadataFactory.fromManifest(manifest);
     return new ManifestReader<>(
-        file, manifest.partitionSpecId(), specsById, inheritableMetadata, FileType.DATA_FILES);
+        file,
+        manifest.partitionSpecId(),
+        specsById,
+        inheritableMetadata,
+        manifest.firstRowId(),
+        FileType.DATA_FILES);
   }
 
   /**
@@ -157,11 +164,52 @@ public class ManifestFiles {
    */
   public static ManifestWriter<DataFile> write(
       int formatVersion, PartitionSpec spec, OutputFile outputFile, Long snapshotId) {
+    return write(
+        formatVersion, spec, EncryptedFiles.plainAsEncryptedOutput(outputFile), snapshotId);
+  }
+
+  /**
+   * Create a new {@link ManifestWriter} for the given format version.
+   *
+   * @param formatVersion a target format version
+   * @param spec a {@link PartitionSpec}
+   * @param encryptedOutputFile an {@link EncryptedOutputFile} where the manifest will be written
+   * @param snapshotId a snapshot ID for the manifest entries, or null for an inherited ID
+   * @return a manifest writer
+   */
+  public static ManifestWriter<DataFile> write(
+      int formatVersion,
+      PartitionSpec spec,
+      EncryptedOutputFile encryptedOutputFile,
+      Long snapshotId) {
+    return newWriter(formatVersion, spec, encryptedOutputFile, snapshotId, null);
+  }
+
+  /**
+   * Create a new {@link ManifestWriter} for the given format version.
+   *
+   * @param formatVersion a target format version
+   * @param spec a {@link PartitionSpec}
+   * @param encryptedOutputFile an {@link EncryptedOutputFile} where the manifest will be written
+   * @param snapshotId a snapshot ID for the manifest entries, or null for an inherited ID
+   * @return a manifest writer
+   */
+  @VisibleForTesting
+  static ManifestWriter<DataFile> newWriter(
+      int formatVersion,
+      PartitionSpec spec,
+      EncryptedOutputFile encryptedOutputFile,
+      Long snapshotId,
+      Long firstRowId) {
     switch (formatVersion) {
       case 1:
-        return new ManifestWriter.V1Writer(spec, outputFile, snapshotId);
+        return new ManifestWriter.V1Writer(spec, encryptedOutputFile, snapshotId);
       case 2:
-        return new ManifestWriter.V2Writer(spec, outputFile, snapshotId);
+        return new ManifestWriter.V2Writer(spec, encryptedOutputFile, snapshotId);
+      case 3:
+        return new ManifestWriter.V3Writer(spec, encryptedOutputFile, snapshotId, firstRowId);
+      case 4:
+        return new ManifestWriter.V4Writer(spec, encryptedOutputFile, snapshotId, firstRowId);
     }
     throw new UnsupportedOperationException(
         "Cannot write manifest for table version: " + formatVersion);
@@ -181,7 +229,7 @@ public class ManifestFiles {
         manifest.content() == ManifestContent.DELETES,
         "Cannot read a data manifest with a DeleteManifestReader: %s",
         manifest);
-    InputFile file = newInputFile(io, manifest.path(), manifest.length());
+    InputFile file = newInputFile(io, manifest);
     InheritableMetadata inheritableMetadata = InheritableMetadataFactory.fromManifest(manifest);
     return new ManifestReader<>(
         file, manifest.partitionSpecId(), specsById, inheritableMetadata, FileType.DELETE_FILES);
@@ -198,11 +246,30 @@ public class ManifestFiles {
    */
   public static ManifestWriter<DeleteFile> writeDeleteManifest(
       int formatVersion, PartitionSpec spec, OutputFile outputFile, Long snapshotId) {
+    return writeDeleteManifest(
+        formatVersion, spec, EncryptedFiles.plainAsEncryptedOutput(outputFile), snapshotId);
+  }
+
+  /**
+   * Create a new {@link ManifestWriter} for the given format version.
+   *
+   * @param formatVersion a target format version
+   * @param spec a {@link PartitionSpec}
+   * @param outputFile an {@link EncryptedOutputFile} where the manifest will be written
+   * @param snapshotId a snapshot ID for the manifest entries, or null for an inherited ID
+   * @return a manifest writer
+   */
+  public static ManifestWriter<DeleteFile> writeDeleteManifest(
+      int formatVersion, PartitionSpec spec, EncryptedOutputFile outputFile, Long snapshotId) {
     switch (formatVersion) {
       case 1:
         throw new IllegalArgumentException("Cannot write delete files in a v1 table");
       case 2:
         return new ManifestWriter.V2DeleteWriter(spec, outputFile, snapshotId);
+      case 3:
+        return new ManifestWriter.V3DeleteWriter(spec, outputFile, snapshotId);
+      case 4:
+        return new ManifestWriter.V4DeleteWriter(spec, outputFile, snapshotId);
     }
     throw new UnsupportedOperationException(
         "Cannot write manifest for table version: " + formatVersion);
@@ -254,15 +321,18 @@ public class ManifestFiles {
       int specId,
       InputFile toCopy,
       Map<Integer, PartitionSpec> specsById,
-      OutputFile outputFile,
+      EncryptedOutputFile outputFile,
       long snapshotId,
       SnapshotSummary.Builder summaryBuilder) {
     // use metadata that will add the current snapshot's ID for the rewrite
+    // read first_row_id as null because this copies the incoming manifest before commit
     InheritableMetadata inheritableMetadata = InheritableMetadataFactory.forCopy(snapshotId);
     try (ManifestReader<DataFile> reader =
-        new ManifestReader<>(toCopy, specId, specsById, inheritableMetadata, FileType.DATA_FILES)) {
+        new ManifestReader<>(
+            toCopy, specId, specsById, inheritableMetadata, null, FileType.DATA_FILES)) {
       return copyManifestInternal(
           formatVersion,
+          null, // do not produce row IDs
           reader,
           outputFile,
           snapshotId,
@@ -276,18 +346,21 @@ public class ManifestFiles {
   static ManifestFile copyRewriteManifest(
       int formatVersion,
       int specId,
+      Long firstRowId,
       InputFile toCopy,
       Map<Integer, PartitionSpec> specsById,
-      OutputFile outputFile,
+      EncryptedOutputFile outputFile,
       long snapshotId,
       SnapshotSummary.Builder summaryBuilder) {
     // for a rewritten manifest all snapshot ids should be set. use empty metadata to throw an
     // exception if it is not
     InheritableMetadata inheritableMetadata = InheritableMetadataFactory.empty();
     try (ManifestReader<DataFile> reader =
-        new ManifestReader<>(toCopy, specId, specsById, inheritableMetadata, FileType.DATA_FILES)) {
+        new ManifestReader<>(
+            toCopy, specId, specsById, inheritableMetadata, firstRowId, FileType.DATA_FILES)) {
       return copyManifestInternal(
           formatVersion,
+          firstRowId,
           reader,
           outputFile,
           snapshotId,
@@ -301,12 +374,14 @@ public class ManifestFiles {
   @SuppressWarnings("Finally")
   private static ManifestFile copyManifestInternal(
       int formatVersion,
+      Long firstRowId,
       ManifestReader<DataFile> reader,
-      OutputFile outputFile,
+      EncryptedOutputFile outputFile,
       long snapshotId,
       SnapshotSummary.Builder summaryBuilder,
       ManifestEntry.Status allowedEntryStatus) {
-    ManifestWriter<DataFile> writer = write(formatVersion, reader.spec(), outputFile, snapshotId);
+    ManifestWriter<DataFile> writer =
+        newWriter(formatVersion, reader.spec(), outputFile, snapshotId, firstRowId);
     boolean threw = true;
     try {
       for (ManifestEntry<DataFile> entry : reader.entries()) {
@@ -345,34 +420,24 @@ public class ManifestFiles {
     return writer.toManifestFile();
   }
 
-  private static InputFile newInputFile(FileIO io, String path, long length) {
-    boolean enabled;
-
-    try {
-      enabled = cachingEnabled(io);
-    } catch (UnsupportedOperationException e) {
-      // There is an issue reading io.properties(). Disable caching.
-      enabled = false;
+  private static InputFile newInputFile(FileIO io, ManifestFile manifest) {
+    InputFile input = io.newInputFile(manifest);
+    if (cachingEnabled(io)) {
+      return contentCache(io).tryCache(input);
     }
 
-    if (enabled) {
-      ContentCache cache = contentCache(io);
-      Preconditions.checkNotNull(
-          cache,
-          "ContentCache creation failed. Check that all manifest caching configurations has valid value.");
-      LOG.debug("FileIO-level cache stats: {}", CONTENT_CACHES.stats());
-      return cache.tryCache(io, path, length);
-    }
-
-    // caching is not enable for this io or caught RuntimeException.
-    return io.newInputFile(path, length);
+    return input;
   }
 
   static boolean cachingEnabled(FileIO io) {
-    return PropertyUtil.propertyAsBoolean(
-        io.properties(),
-        CatalogProperties.IO_MANIFEST_CACHE_ENABLED,
-        CatalogProperties.IO_MANIFEST_CACHE_ENABLED_DEFAULT);
+    try {
+      return PropertyUtil.propertyAsBoolean(
+          io.properties(),
+          CatalogProperties.IO_MANIFEST_CACHE_ENABLED,
+          CatalogProperties.IO_MANIFEST_CACHE_ENABLED_DEFAULT);
+    } catch (UnsupportedOperationException e) {
+      return false;
+    }
   }
 
   static long cacheDurationMs(FileIO io) {

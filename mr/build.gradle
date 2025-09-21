@@ -23,6 +23,9 @@ project(':iceberg-mr') {
       exclude group: 'org.apache.parquet', module: 'parquet-hadoop-bundle'
     }
   }
+  test {
+    useJUnitPlatform()
+  }
 
   dependencies {
     implementation project(path: ':iceberg-bundled-guava', configuration: 'shadow')
@@ -34,43 +37,41 @@ project(':iceberg-mr') {
     implementation project(':iceberg-orc')
     implementation project(':iceberg-parquet')
 
-    compileOnly("org.apache.hadoop:hadoop-client") {
+    compileOnly(libs.hadoop3.client) {
       exclude group: 'org.apache.avro', module: 'avro'
     }
 
-    compileOnly("org.apache.hive:hive-exec::core") {
-      exclude group: 'com.google.code.findbugs', module: 'jsr305'
-      exclude group: 'com.google.guava'
+    implementation libs.caffeine
+    implementation libs.parquet.column
+    implementation("${libs.orc.core.get().module}:${libs.versions.orc.get()}:nohive") {
+      exclude group: 'org.apache.hadoop'
+      exclude group: 'commons-lang'
+      // These artifacts are shaded and included in the orc-core fat jar
       exclude group: 'com.google.protobuf', module: 'protobuf-java'
-      exclude group: 'org.apache.avro', module: 'avro'
-      exclude group: 'org.apache.calcite.avatica'
-      exclude group: 'org.apache.hive', module: 'hive-llap-tez'
-      exclude group: 'org.apache.logging.log4j'
-      exclude group: 'org.pentaho' // missing dependency
-      exclude group: 'org.slf4j', module: 'slf4j-log4j12'
+      exclude group: 'org.apache.hive', module: 'hive-storage-api'
     }
-    compileOnly("org.apache.hive:hive-metastore")
-    compileOnly("org.apache.hive:hive-serde")
 
-    implementation "com.github.ben-manes.caffeine:caffeine"
-
-    testImplementation "org.apache.calcite:calcite-core"
-    testImplementation "org.apache.calcite:calcite-druid"
+    testImplementation(libs.calcite.core) {
+      exclude group: 'org.apache.calcite.avatica', module: 'avatica'
+    }
+    testImplementation(libs.calcite.druid) {
+      exclude group: 'org.apache.calcite.avatica', module: 'avatica'
+    }
 
     testImplementation project(path: ':iceberg-data', configuration: 'testArtifacts')
     testImplementation project(path: ':iceberg-api', configuration: 'testArtifacts')
     testImplementation project(path: ':iceberg-core', configuration: 'testArtifacts')
     testImplementation project(path: ':iceberg-hive-metastore', configuration: 'testArtifacts')
 
-    testImplementation("org.apache.avro:avro")
-    testImplementation("org.apache.calcite:calcite-core")
-    testImplementation("com.esotericsoftware:kryo-shaded:4.0.3")
-    testImplementation("com.fasterxml.jackson.core:jackson-annotations:2.15.2")
-    testImplementation("org.apache.hive:hive-service") {
+    testImplementation libs.avro.avro
+    testImplementation libs.kryo.shaded
+    testImplementation platform(libs.jackson.bom)
+    testImplementation libs.jackson.annotations
+    testImplementation(libs.hive2.service) {
       exclude group: 'org.apache.hive', module: 'hive-exec'
     }
-    testImplementation("org.apache.tez:tez-dag")
-    testImplementation("org.apache.tez:tez-mapreduce")
+    testImplementation libs.tez08.dag
+    testImplementation libs.tez08.mapreduce
   }
 
   test {

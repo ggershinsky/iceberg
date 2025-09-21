@@ -22,11 +22,22 @@ import java.io.Serializable;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import org.apache.iceberg.encryption.EncryptedKey;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
+import org.apache.iceberg.view.ViewMetadata;
+import org.apache.iceberg.view.ViewVersion;
 
-/** Represents a change to table metadata. */
+/** Represents a change to table or view metadata. */
 public interface MetadataUpdate extends Serializable {
-  void applyTo(TableMetadata.Builder metadataBuilder);
+  default void applyTo(TableMetadata.Builder metadataBuilder) {
+    throw new UnsupportedOperationException(
+        String.format("Cannot apply update %s to a table", this.getClass().getSimpleName()));
+  }
+
+  default void applyTo(ViewMetadata.Builder viewMetadataBuilder) {
+    throw new UnsupportedOperationException(
+        String.format("Cannot apply update %s to a view", this.getClass().getSimpleName()));
+  }
 
   class AssignUUID implements MetadataUpdate {
     private final String uuid;
@@ -41,6 +52,11 @@ public interface MetadataUpdate extends Serializable {
 
     @Override
     public void applyTo(TableMetadata.Builder metadataBuilder) {
+      metadataBuilder.assignUUID(uuid);
+    }
+
+    @Override
+    public void applyTo(ViewMetadata.Builder metadataBuilder) {
       metadataBuilder.assignUUID(uuid);
     }
   }
@@ -60,15 +76,18 @@ public interface MetadataUpdate extends Serializable {
     public void applyTo(TableMetadata.Builder metadataBuilder) {
       metadataBuilder.upgradeFormatVersion(formatVersion);
     }
+
+    @Override
+    public void applyTo(ViewMetadata.Builder viewMetadataBuilder) {
+      viewMetadataBuilder.upgradeFormatVersion(formatVersion);
+    }
   }
 
   class AddSchema implements MetadataUpdate {
     private final Schema schema;
-    private final int lastColumnId;
 
-    public AddSchema(Schema schema, int lastColumnId) {
+    public AddSchema(Schema schema) {
       this.schema = schema;
-      this.lastColumnId = lastColumnId;
     }
 
     public Schema schema() {
@@ -76,12 +95,17 @@ public interface MetadataUpdate extends Serializable {
     }
 
     public int lastColumnId() {
-      return lastColumnId;
+      return schema.highestFieldId();
     }
 
     @Override
     public void applyTo(TableMetadata.Builder metadataBuilder) {
-      metadataBuilder.addSchema(schema, lastColumnId);
+      metadataBuilder.addSchema(schema);
+    }
+
+    @Override
+    public void applyTo(ViewMetadata.Builder viewMetadataBuilder) {
+      viewMetadataBuilder.addSchema(schema);
     }
   }
 
@@ -140,6 +164,40 @@ public interface MetadataUpdate extends Serializable {
     }
   }
 
+  class RemovePartitionSpecs implements MetadataUpdate {
+    private final Set<Integer> specIds;
+
+    public RemovePartitionSpecs(Set<Integer> specIds) {
+      this.specIds = specIds;
+    }
+
+    public Set<Integer> specIds() {
+      return specIds;
+    }
+
+    @Override
+    public void applyTo(TableMetadata.Builder metadataBuilder) {
+      metadataBuilder.removeSpecs(specIds);
+    }
+  }
+
+  class RemoveSchemas implements MetadataUpdate {
+    private final Set<Integer> schemaIds;
+
+    public RemoveSchemas(Set<Integer> schemaIds) {
+      this.schemaIds = schemaIds;
+    }
+
+    public Set<Integer> schemaIds() {
+      return schemaIds;
+    }
+
+    @Override
+    public void applyTo(TableMetadata.Builder metadataBuilder) {
+      metadataBuilder.removeSchemas(schemaIds);
+    }
+  }
+
   class AddSortOrder implements MetadataUpdate {
     private final UnboundSortOrder sortOrder;
 
@@ -179,16 +237,14 @@ public interface MetadataUpdate extends Serializable {
   }
 
   class SetStatistics implements MetadataUpdate {
-    private final long snapshotId;
     private final StatisticsFile statisticsFile;
 
-    public SetStatistics(long snapshotId, StatisticsFile statisticsFile) {
-      this.snapshotId = snapshotId;
+    public SetStatistics(StatisticsFile statisticsFile) {
       this.statisticsFile = statisticsFile;
     }
 
     public long snapshotId() {
-      return snapshotId;
+      return statisticsFile.snapshotId();
     }
 
     public StatisticsFile statisticsFile() {
@@ -197,7 +253,7 @@ public interface MetadataUpdate extends Serializable {
 
     @Override
     public void applyTo(TableMetadata.Builder metadataBuilder) {
-      metadataBuilder.setStatistics(snapshotId, statisticsFile);
+      metadataBuilder.setStatistics(statisticsFile);
     }
   }
 
@@ -218,6 +274,44 @@ public interface MetadataUpdate extends Serializable {
     }
   }
 
+  class SetPartitionStatistics implements MetadataUpdate {
+    private final PartitionStatisticsFile partitionStatisticsFile;
+
+    public SetPartitionStatistics(PartitionStatisticsFile partitionStatisticsFile) {
+      this.partitionStatisticsFile = partitionStatisticsFile;
+    }
+
+    public long snapshotId() {
+      return partitionStatisticsFile.snapshotId();
+    }
+
+    public PartitionStatisticsFile partitionStatisticsFile() {
+      return partitionStatisticsFile;
+    }
+
+    @Override
+    public void applyTo(TableMetadata.Builder metadataBuilder) {
+      metadataBuilder.setPartitionStatistics(partitionStatisticsFile);
+    }
+  }
+
+  class RemovePartitionStatistics implements MetadataUpdate {
+    private final long snapshotId;
+
+    public RemovePartitionStatistics(long snapshotId) {
+      this.snapshotId = snapshotId;
+    }
+
+    public long snapshotId() {
+      return snapshotId;
+    }
+
+    @Override
+    public void applyTo(TableMetadata.Builder metadataBuilder) {
+      metadataBuilder.removePartitionStatistics(snapshotId);
+    }
+  }
+
   class AddSnapshot implements MetadataUpdate {
     private final Snapshot snapshot;
 
@@ -235,20 +329,24 @@ public interface MetadataUpdate extends Serializable {
     }
   }
 
-  class RemoveSnapshot implements MetadataUpdate {
-    private final long snapshotId;
+  class RemoveSnapshots implements MetadataUpdate {
+    private final Set<Long> snapshotIds;
 
-    public RemoveSnapshot(long snapshotId) {
-      this.snapshotId = snapshotId;
+    public RemoveSnapshots(long snapshotId) {
+      this.snapshotIds = ImmutableSet.of(snapshotId);
     }
 
-    public long snapshotId() {
-      return snapshotId;
+    public RemoveSnapshots(Set<Long> snapshotIds) {
+      this.snapshotIds = snapshotIds;
+    }
+
+    public Set<Long> snapshotIds() {
+      return snapshotIds;
     }
 
     @Override
     public void applyTo(TableMetadata.Builder metadataBuilder) {
-      metadataBuilder.removeSnapshots(ImmutableSet.of(snapshotId));
+      metadataBuilder.removeSnapshots(snapshotIds);
     }
   }
 
@@ -273,9 +371,9 @@ public interface MetadataUpdate extends Serializable {
     private final String refName;
     private final Long snapshotId;
     private final SnapshotRefType type;
-    private Integer minSnapshotsToKeep;
-    private Long maxSnapshotAgeMs;
-    private Long maxRefAgeMs;
+    private final Integer minSnapshotsToKeep;
+    private final Long maxSnapshotAgeMs;
+    private final Long maxRefAgeMs;
 
     public SetSnapshotRef(
         String refName,
@@ -343,6 +441,11 @@ public interface MetadataUpdate extends Serializable {
     public void applyTo(TableMetadata.Builder metadataBuilder) {
       metadataBuilder.setProperties(updated);
     }
+
+    @Override
+    public void applyTo(ViewMetadata.Builder viewMetadataBuilder) {
+      viewMetadataBuilder.setProperties(updated);
+    }
   }
 
   class RemoveProperties implements MetadataUpdate {
@@ -360,6 +463,11 @@ public interface MetadataUpdate extends Serializable {
     public void applyTo(TableMetadata.Builder metadataBuilder) {
       metadataBuilder.removeProperties(removed);
     }
+
+    @Override
+    public void applyTo(ViewMetadata.Builder viewMetadataBuilder) {
+      viewMetadataBuilder.removeProperties(removed);
+    }
   }
 
   class SetLocation implements MetadataUpdate {
@@ -376,6 +484,79 @@ public interface MetadataUpdate extends Serializable {
     @Override
     public void applyTo(TableMetadata.Builder metadataBuilder) {
       metadataBuilder.setLocation(location);
+    }
+
+    @Override
+    public void applyTo(ViewMetadata.Builder viewMetadataBuilder) {
+      viewMetadataBuilder.setLocation(location);
+    }
+  }
+
+  class AddViewVersion implements MetadataUpdate {
+    private final ViewVersion viewVersion;
+
+    public AddViewVersion(ViewVersion viewVersion) {
+      this.viewVersion = viewVersion;
+    }
+
+    public ViewVersion viewVersion() {
+      return viewVersion;
+    }
+
+    @Override
+    public void applyTo(ViewMetadata.Builder viewMetadataBuilder) {
+      viewMetadataBuilder.addVersion(viewVersion);
+    }
+  }
+
+  class SetCurrentViewVersion implements MetadataUpdate {
+    private final int versionId;
+
+    public SetCurrentViewVersion(int versionId) {
+      this.versionId = versionId;
+    }
+
+    public int versionId() {
+      return versionId;
+    }
+
+    @Override
+    public void applyTo(ViewMetadata.Builder viewMetadataBuilder) {
+      viewMetadataBuilder.setCurrentVersionId(versionId);
+    }
+  }
+
+  class AddEncryptionKey implements MetadataUpdate {
+    private final EncryptedKey key;
+
+    public AddEncryptionKey(EncryptedKey key) {
+      this.key = key;
+    }
+
+    public EncryptedKey key() {
+      return key;
+    }
+
+    @Override
+    public void applyTo(TableMetadata.Builder builder) {
+      builder.addEncryptionKey(key);
+    }
+  }
+
+  class RemoveEncryptionKey implements MetadataUpdate {
+    private final String keyId;
+
+    public RemoveEncryptionKey(String keyId) {
+      this.keyId = keyId;
+    }
+
+    public String keyId() {
+      return keyId;
+    }
+
+    @Override
+    public void applyTo(TableMetadata.Builder builder) {
+      builder.removeEncryptionKey(keyId);
     }
   }
 }

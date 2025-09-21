@@ -18,14 +18,26 @@
  */
 package org.apache.iceberg;
 
-import org.assertj.core.api.Assertions;
-import org.junit.Test;
+import static org.assertj.core.api.Assertions.assertThat;
+
+import org.junit.jupiter.api.Test;
 
 public class TestEnvironmentContext {
 
   @Test
   public void testDefaultValue() {
-    Assertions.assertThat(EnvironmentContext.get().get("iceberg-version"))
+    assertThat(EnvironmentContext.get().get("iceberg-version"))
         .isEqualTo(IcebergBuild.fullVersion());
+  }
+
+  @Test
+  public void testPutAndRemove() {
+    EnvironmentContext.put("test-key", "test-value");
+    assertThat(EnvironmentContext.get()).containsEntry("test-key", "test-value");
+
+    assertThat(EnvironmentContext.remove("test-key")).isEqualTo("test-value");
+    assertThat(EnvironmentContext.get()).doesNotContainKey("test-key");
+
+    assertThat(EnvironmentContext.remove("test-key")).isNull();
   }
 }

@@ -18,10 +18,14 @@
  */
 package org.apache.iceberg.aws;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 import java.util.Map;
-import org.apache.iceberg.AssertHelpers;
+import org.apache.iceberg.aws.s3.S3FileIOProperties;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariables;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.glue.GlueClient;
@@ -30,6 +34,13 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
+@EnabledIfEnvironmentVariables({
+  @EnabledIfEnvironmentVariable(named = AwsIntegTestUtil.AWS_ACCESS_KEY_ID, matches = ".*"),
+  @EnabledIfEnvironmentVariable(named = AwsIntegTestUtil.AWS_SECRET_ACCESS_KEY, matches = ".*"),
+  @EnabledIfEnvironmentVariable(named = AwsIntegTestUtil.AWS_SESSION_TOKEN, matches = ".*"),
+  @EnabledIfEnvironmentVariable(named = AwsIntegTestUtil.AWS_REGION, matches = ".*"),
+  @EnabledIfEnvironmentVariable(named = AwsIntegTestUtil.AWS_TEST_BUCKET, matches = ".*")
+})
 public class TestDefaultAwsClientFactory {
 
   @Test
@@ -38,43 +49,43 @@ public class TestDefaultAwsClientFactory {
     properties.put(AwsProperties.GLUE_CATALOG_ENDPOINT, "https://unknown:1234");
     AwsClientFactory factory = AwsClientFactories.from(properties);
     GlueClient glueClient = factory.glue();
-    AssertHelpers.assertThrowsCause(
-        "Should refuse connection to unknown endpoint",
-        SdkClientException.class,
-        "Unable to execute HTTP request: unknown",
-        () -> glueClient.getDatabase(GetDatabaseRequest.builder().name("TEST").build()));
+    assertThatThrownBy(
+            () -> glueClient.getDatabase(GetDatabaseRequest.builder().name("TEST").build()))
+        .cause()
+        .isInstanceOf(SdkClientException.class)
+        .hasMessageContaining("Unable to execute HTTP request: unknown");
   }
 
   @Test
   public void testS3FileIoEndpointOverride() {
     Map<String, String> properties = Maps.newHashMap();
-    properties.put(AwsProperties.S3FILEIO_ENDPOINT, "https://unknown:1234");
+    properties.put(S3FileIOProperties.ENDPOINT, "https://unknown:1234");
     AwsClientFactory factory = AwsClientFactories.from(properties);
     S3Client s3Client = factory.s3();
-    AssertHelpers.assertThrowsCause(
-        "Should refuse connection to unknown endpoint",
-        SdkClientException.class,
-        "Unable to execute HTTP request: unknown",
-        () -> s3Client.getObject(GetObjectRequest.builder().bucket("bucket").key("key").build()));
+    assertThatThrownBy(
+            () ->
+                s3Client.getObject(GetObjectRequest.builder().bucket("bucket").key("key").build()))
+        .cause()
+        .isInstanceOf(SdkClientException.class)
+        .hasMessageContaining("Unable to execute HTTP request: bucket.unknown");
   }
 
   @Test
   public void testS3FileIoCredentialsOverride() {
     Map<String, String> properties = Maps.newHashMap();
-    properties.put(AwsProperties.S3FILEIO_ACCESS_KEY_ID, "unknown");
-    properties.put(AwsProperties.S3FILEIO_SECRET_ACCESS_KEY, "unknown");
+    properties.put(S3FileIOProperties.ACCESS_KEY_ID, "unknown");
+    properties.put(S3FileIOProperties.SECRET_ACCESS_KEY, "unknown");
     AwsClientFactory factory = AwsClientFactories.from(properties);
     S3Client s3Client = factory.s3();
-    AssertHelpers.assertThrows(
-        "Should fail request because of bad access key",
-        S3Exception.class,
-        "The AWS Access Key Id you provided does not exist in our records",
-        () ->
-            s3Client.getObject(
-                GetObjectRequest.builder()
-                    .bucket(AwsIntegTestUtil.testBucketName())
-                    .key("key")
-                    .build()));
+    assertThatThrownBy(
+            () ->
+                s3Client.getObject(
+                    GetObjectRequest.builder()
+                        .bucket(AwsIntegTestUtil.testBucketName())
+                        .key("key")
+                        .build()))
+        .isInstanceOf(S3Exception.class)
+        .hasMessageContaining("The AWS Access Key Id you provided does not exist in our records");
   }
 
   @Test
@@ -83,10 +94,9 @@ public class TestDefaultAwsClientFactory {
     properties.put(AwsProperties.DYNAMODB_ENDPOINT, "https://unknown:1234");
     AwsClientFactory factory = AwsClientFactories.from(properties);
     DynamoDbClient dynamoDbClient = factory.dynamo();
-    AssertHelpers.assertThrowsCause(
-        "Should refuse connection to unknown endpoint",
-        SdkClientException.class,
-        "Unable to execute HTTP request: unknown",
-        dynamoDbClient::listTables);
+    assertThatThrownBy(dynamoDbClient::listTables)
+        .cause()
+        .isInstanceOf(SdkClientException.class)
+        .hasMessageContaining("Unable to execute HTTP request: unknown");
   }
 }

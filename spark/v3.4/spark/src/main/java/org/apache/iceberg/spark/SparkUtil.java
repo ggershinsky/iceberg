@@ -18,6 +18,8 @@
  */
 package org.apache.iceberg.spark;
 
+import java.math.BigDecimal;
+import java.nio.ByteBuffer;
 import java.sql.Date;
 import java.sql.Timestamp;
 import java.util.List;
@@ -25,27 +27,43 @@ import java.util.Map;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.apache.avro.generic.GenericData;
+import org.apache.avro.util.Utf8;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.StructLike;
 import org.apache.iceberg.relocated.com.google.common.base.Joiner;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.transforms.Transform;
 import org.apache.iceberg.transforms.UnknownTransform;
+import org.apache.iceberg.types.Type;
+import org.apache.iceberg.types.Types;
+import org.apache.iceberg.util.ByteBuffers;
 import org.apache.iceberg.util.Pair;
+import org.apache.spark.SparkEnv;
+import org.apache.spark.scheduler.ExecutorCacheTaskLocation;
 import org.apache.spark.sql.RuntimeConfig;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.catalyst.expressions.BoundReference;
 import org.apache.spark.sql.catalyst.expressions.EqualTo;
 import org.apache.spark.sql.catalyst.expressions.Expression;
+import org.apache.spark.sql.catalyst.expressions.GenericInternalRow;
 import org.apache.spark.sql.catalyst.expressions.Literal;
 import org.apache.spark.sql.connector.expressions.NamedReference;
 import org.apache.spark.sql.types.DataType;
 import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.Decimal;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.storage.BlockManager;
+import org.apache.spark.storage.BlockManagerId;
+import org.apache.spark.storage.BlockManagerMaster;
+import org.apache.spark.unsafe.types.UTF8String;
 import org.joda.time.DateTime;
+import scala.collection.JavaConverters;
+import scala.collection.Seq;
 
 public class SparkUtil {
   private static final String SPARK_CATALOG_CONF_PREFIX = "spark.sql.catalog";
@@ -273,5 +291,84 @@ public class SparkUtil {
 
   public static boolean caseSensitive(SparkSession spark) {
     return Boolean.parseBoolean(spark.conf().get("spark.sql.caseSensitive"));
+  }
+
+  public static List<String> executorLocations() {
+    BlockManager driverBlockManager = SparkEnv.get().blockManager();
+    List<BlockManagerId> executorBlockManagerIds = fetchPeers(driverBlockManager);
+    return executorBlockManagerIds.stream()
+        .map(SparkUtil::toExecutorLocation)
+        .sorted()
+        .collect(Collectors.toList());
+  }
+
+  private static List<BlockManagerId> fetchPeers(BlockManager blockManager) {
+    BlockManagerMaster master = blockManager.master();
+    BlockManagerId id = blockManager.blockManagerId();
+    return toJavaList(master.getPeers(id));
+  }
+
+  private static <T> List<T> toJavaList(Seq<T> seq) {
+    return JavaConverters.seqAsJavaListConverter(seq).asJava();
+  }
+
+  private static String toExecutorLocation(BlockManagerId id) {
+    return ExecutorCacheTaskLocation.apply(id.host(), id.executorId()).toString();
+  }
+
+  /**
+   * Converts a value to pass into Spark from Iceberg's internal object model.
+   *
+   * @param type an Iceberg type
+   * @param value a value that is an instance of {@link Type.TypeID#javaClass()}
+   * @return the value converted for Spark
+   */
+  public static Object internalToSpark(Type type, Object value) {
+    if (value == null) {
+      return null;
+    }
+
+    switch (type.typeId()) {
+      case DECIMAL:
+        return Decimal.apply((BigDecimal) value);
+      case UUID:
+      case STRING:
+        if (value instanceof Utf8) {
+          Utf8 utf8 = (Utf8) value;
+          return UTF8String.fromBytes(utf8.getBytes(), 0, utf8.getByteLength());
+        }
+        return UTF8String.fromString(value.toString());
+      case FIXED:
+        if (value instanceof byte[]) {
+          return value;
+        } else if (value instanceof GenericData.Fixed) {
+          return ((GenericData.Fixed) value).bytes();
+        }
+        return ByteBuffers.toByteArray((ByteBuffer) value);
+      case BINARY:
+        return ByteBuffers.toByteArray((ByteBuffer) value);
+      case STRUCT:
+        Types.StructType structType = (Types.StructType) type;
+
+        if (structType.fields().isEmpty()) {
+          return new GenericInternalRow();
+        }
+
+        List<Types.NestedField> fields = structType.fields();
+        Object[] values = new Object[fields.size()];
+        StructLike struct = (StructLike) value;
+
+        for (int index = 0; index < fields.size(); index++) {
+          Types.NestedField field = fields.get(index);
+          Type fieldType = field.type();
+          values[index] =
+              internalToSpark(fieldType, struct.get(index, fieldType.typeId().javaClass()));
+        }
+
+        return new GenericInternalRow(values);
+      default:
+    }
+
+    return value;
   }
 }

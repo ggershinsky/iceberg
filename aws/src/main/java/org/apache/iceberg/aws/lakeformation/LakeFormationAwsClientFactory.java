@@ -78,9 +78,11 @@ public class LakeFormationAwsClientFactory extends AssumeRoleAwsClientFactory {
   public S3Client s3() {
     if (isTableRegisteredWithLakeFormation()) {
       return S3Client.builder()
-          .applyMutation(awsProperties()::applyHttpClientConfigurations)
-          .applyMutation(awsProperties()::applyS3EndpointConfigurations)
-          .applyMutation(awsProperties()::applyS3ServiceConfigurations)
+          .applyMutation(awsClientProperties()::applyLegacyMd5Plugin)
+          .applyMutation(httpClientProperties()::applyHttpClientConfigurations)
+          .applyMutation(s3FileIOProperties()::applyEndpointConfigurations)
+          .applyMutation(s3FileIOProperties()::applyServiceConfigurations)
+          .applyMutation(s3FileIOProperties()::applyRetryConfigurations)
           .credentialsProvider(
               new LakeFormationCredentialsProvider(lakeFormation(), buildTableArn()))
           .region(Region.of(region()))
@@ -94,7 +96,8 @@ public class LakeFormationAwsClientFactory extends AssumeRoleAwsClientFactory {
   public KmsClient kms() {
     if (isTableRegisteredWithLakeFormation()) {
       return KmsClient.builder()
-          .applyMutation(awsProperties()::applyHttpClientConfigurations)
+          .applyMutation(httpClientProperties()::applyHttpClientConfigurations)
+          .applyMutation(awsClientProperties()::applyRetryConfigurations)
           .credentialsProvider(
               new LakeFormationCredentialsProvider(lakeFormation(), buildTableArn()))
           .region(Region.of(region()))
@@ -134,13 +137,13 @@ public class LakeFormationAwsClientFactory extends AssumeRoleAwsClientFactory {
   private LakeFormationClient lakeFormation() {
     return LakeFormationClient.builder()
         .applyMutation(this::applyAssumeRoleConfigurations)
-        .applyMutation(awsProperties()::applyHttpClientConfigurations)
+        .applyMutation(httpClientProperties()::applyHttpClientConfigurations)
         .build();
   }
 
   static class LakeFormationCredentialsProvider implements AwsCredentialsProvider {
-    private LakeFormationClient client;
-    private String tableArn;
+    private final LakeFormationClient client;
+    private final String tableArn;
 
     LakeFormationCredentialsProvider(LakeFormationClient lakeFormationClient, String tableArn) {
       this.client = lakeFormationClient;

@@ -100,20 +100,17 @@ public class ParquetAvroValueReaders {
           expected != null ? expected.fields() : ImmutableList.of();
       List<ParquetValueReader<?>> reorderedFields =
           Lists.newArrayListWithExpectedSize(expectedFields.size());
-      List<Type> types = Lists.newArrayListWithExpectedSize(expectedFields.size());
       for (Types.NestedField field : expectedFields) {
         int id = field.fieldId();
         ParquetValueReader<?> reader = readersById.get(id);
         if (reader != null) {
           reorderedFields.add(reader);
-          types.add(typesById.get(id));
         } else {
           reorderedFields.add(ParquetValueReaders.nulls());
-          types.add(null);
         }
       }
 
-      return new RecordReader(types, reorderedFields, avroSchema);
+      return new RecordReader(reorderedFields, avroSchema);
     }
 
     @Override
@@ -191,9 +188,9 @@ public class ParquetAvroValueReaders {
               case FIXED_LEN_BYTE_ARRAY:
                 return new DecimalReader(desc, decimal.getScale());
               case INT64:
-                return new IntegerAsDecimalReader(desc, decimal.getScale());
-              case INT32:
                 return new LongAsDecimalReader(desc, decimal.getScale());
+              case INT32:
+                return new IntegerAsDecimalReader(desc, decimal.getScale());
               default:
                 throw new UnsupportedOperationException(
                     "Unsupported base type for decimal: " + primitive.getPrimitiveTypeName());
@@ -346,8 +343,8 @@ public class ParquetAvroValueReaders {
   static class RecordReader extends StructReader<Record, Record> {
     private final Schema schema;
 
-    RecordReader(List<Type> types, List<ParquetValueReader<?>> readers, Schema schema) {
-      super(types, readers);
+    RecordReader(List<ParquetValueReader<?>> readers, Schema schema) {
+      super(readers);
       this.schema = schema;
     }
 

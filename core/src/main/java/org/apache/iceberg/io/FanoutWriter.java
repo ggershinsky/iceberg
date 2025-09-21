@@ -22,10 +22,10 @@ import java.io.IOException;
 import java.util.Map;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.StructLike;
-import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.util.StructLikeMap;
+import org.apache.iceberg.util.StructLikeUtil;
 
 /**
  * A writer capable of writing to multiple specs and partitions that keeps files for each seen
@@ -60,7 +60,7 @@ abstract class FanoutWriter<T, R> implements PartitioningWriter<T, R> {
 
     if (writer == null) {
       // copy the partition key as the key object may be reused
-      StructLike copiedPartition = StructCopy.copy(partition);
+      StructLike copiedPartition = StructLikeUtil.copy(partition);
       writer = newWriter(spec, copiedPartition);
       specWriters.put(copiedPartition, writer);
     }
@@ -93,19 +93,5 @@ abstract class FanoutWriter<T, R> implements PartitioningWriter<T, R> {
   public final R result() {
     Preconditions.checkState(closed, "Cannot get result from unclosed writer");
     return aggregatedResult();
-  }
-
-  /** @deprecated will be removed in 1.5.0 */
-  @Deprecated
-  protected EncryptedOutputFile newOutputFile(
-      OutputFileFactory fileFactory, PartitionSpec spec, StructLike partition) {
-    Preconditions.checkArgument(
-        spec.isUnpartitioned() || partition != null,
-        "Partition must not be null when creating output file for partitioned spec");
-    if (spec.isUnpartitioned() || partition == null) {
-      return fileFactory.newOutputFile();
-    } else {
-      return fileFactory.newOutputFile(spec, partition);
-    }
   }
 }

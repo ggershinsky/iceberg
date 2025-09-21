@@ -100,155 +100,6 @@ public class TestPositionFilter {
   }
 
   @Test
-  public void testPositionStreamRowFilter() {
-    CloseableIterable<StructLike> rows =
-        CloseableIterable.withNoopClose(
-            Lists.newArrayList(
-                Row.of(0L, "a"),
-                Row.of(1L, "b"),
-                Row.of(2L, "c"),
-                Row.of(3L, "d"),
-                Row.of(4L, "e"),
-                Row.of(5L, "f"),
-                Row.of(6L, "g"),
-                Row.of(7L, "h"),
-                Row.of(8L, "i"),
-                Row.of(9L, "j")));
-
-    CloseableIterable<Long> deletes =
-        CloseableIterable.withNoopClose(Lists.newArrayList(0L, 3L, 4L, 7L, 9L));
-
-    CloseableIterable<StructLike> actual =
-        Deletes.streamingFilter(rows, row -> row.get(0, Long.class), deletes);
-
-    assertThat(Iterables.transform(actual, row -> row.get(0, Long.class)))
-        .as("Filter should produce expected rows")
-        .containsExactlyElementsOf(Lists.newArrayList(1L, 2L, 5L, 6L, 8L));
-  }
-
-  @Test
-  public void testPositionStreamRowDeleteMarker() {
-    CloseableIterable<StructLike> rows =
-        CloseableIterable.withNoopClose(
-            Lists.newArrayList(
-                Row.of(0L, "a", false),
-                Row.of(1L, "b", false),
-                Row.of(2L, "c", false),
-                Row.of(3L, "d", false),
-                Row.of(4L, "e", false),
-                Row.of(5L, "f", false),
-                Row.of(6L, "g", false),
-                Row.of(7L, "h", false),
-                Row.of(8L, "i", false),
-                Row.of(9L, "j", false)));
-
-    CloseableIterable<Long> deletes =
-        CloseableIterable.withNoopClose(Lists.newArrayList(0L, 3L, 4L, 7L, 9L));
-
-    CloseableIterable<StructLike> actual =
-        Deletes.streamingMarker(
-            rows,
-            row -> row.get(0, Long.class), /* row to position */
-            deletes,
-            row -> row.set(2, true) /* delete marker */);
-
-    assertThat(Iterables.transform(actual, row -> row.get(2, Boolean.class)))
-        .as("Filter should produce expected rows")
-        .containsExactlyElementsOf(
-            Lists.newArrayList(true, false, false, true, true, false, false, true, false, true));
-  }
-
-  @Test
-  public void testPositionStreamRowFilterWithDuplicates() {
-    CloseableIterable<StructLike> rows =
-        CloseableIterable.withNoopClose(
-            Lists.newArrayList(
-                Row.of(0L, "a"),
-                Row.of(1L, "b"),
-                Row.of(2L, "c"),
-                Row.of(3L, "d"),
-                Row.of(4L, "e"),
-                Row.of(5L, "f"),
-                Row.of(6L, "g"),
-                Row.of(7L, "h"),
-                Row.of(8L, "i"),
-                Row.of(9L, "j")));
-
-    CloseableIterable<Long> deletes =
-        CloseableIterable.withNoopClose(Lists.newArrayList(0L, 0L, 0L, 3L, 4L, 7L, 7L, 9L, 9L, 9L));
-
-    CloseableIterable<StructLike> actual =
-        Deletes.streamingFilter(rows, row -> row.get(0, Long.class), deletes);
-
-    assertThat(Iterables.transform(actual, row -> row.get(0, Long.class)))
-        .as("Filter should produce expected rows")
-        .containsExactlyElementsOf(Lists.newArrayList(1L, 2L, 5L, 6L, 8L));
-  }
-
-  @Test
-  public void testPositionStreamRowFilterWithRowGaps() {
-    // test the case where row position is greater than the delete position
-    CloseableIterable<StructLike> rows =
-        CloseableIterable.withNoopClose(
-            Lists.newArrayList(Row.of(2L, "c"), Row.of(3L, "d"), Row.of(5L, "f"), Row.of(6L, "g")));
-
-    CloseableIterable<Long> deletes =
-        CloseableIterable.withNoopClose(Lists.newArrayList(0L, 2L, 3L, 4L, 7L, 9L));
-
-    CloseableIterable<StructLike> actual =
-        Deletes.streamingFilter(rows, row -> row.get(0, Long.class), deletes);
-
-    assertThat(Iterables.transform(actual, row -> row.get(0, Long.class)))
-        .as("Filter should produce expected rows")
-        .containsExactlyElementsOf(Lists.newArrayList(5L, 6L));
-  }
-
-  @Test
-  public void testCombinedPositionStreamRowFilter() {
-    CloseableIterable<StructLike> positionDeletes1 =
-        CloseableIterable.withNoopClose(
-            Lists.newArrayList(
-                Row.of("file_a.avro", 0L),
-                Row.of("file_a.avro", 3L),
-                Row.of("file_a.avro", 9L),
-                Row.of("file_b.avro", 5L),
-                Row.of("file_b.avro", 6L)));
-
-    CloseableIterable<StructLike> positionDeletes2 =
-        CloseableIterable.withNoopClose(
-            Lists.newArrayList(
-                Row.of("file_a.avro", 3L),
-                Row.of("file_a.avro", 4L),
-                Row.of("file_a.avro", 7L),
-                Row.of("file_b.avro", 2L)));
-
-    CloseableIterable<StructLike> rows =
-        CloseableIterable.withNoopClose(
-            Lists.newArrayList(
-                Row.of(0L, "a"),
-                Row.of(1L, "b"),
-                Row.of(2L, "c"),
-                Row.of(3L, "d"),
-                Row.of(4L, "e"),
-                Row.of(5L, "f"),
-                Row.of(6L, "g"),
-                Row.of(7L, "h"),
-                Row.of(8L, "i"),
-                Row.of(9L, "j")));
-
-    CloseableIterable<StructLike> actual =
-        Deletes.streamingFilter(
-            rows,
-            row -> row.get(0, Long.class),
-            Deletes.deletePositions(
-                "file_a.avro", ImmutableList.of(positionDeletes1, positionDeletes2)));
-
-    assertThat(Iterables.transform(actual, row -> row.get(0, Long.class)))
-        .as("Filter should produce expected rows")
-        .containsExactlyElementsOf(Lists.newArrayList(1L, 2L, 5L, 6L, 8L));
-  }
-
-  @Test
   public void testPositionSetRowFilter() {
     CloseableIterable<StructLike> rows =
         CloseableIterable.withNoopClose(
@@ -309,12 +160,14 @@ public class TestPositionFilter {
                 Row.of(8L, "i"),
                 Row.of(9L, "j")));
 
+    CloseableIterable<Long> positions =
+        CloseableIterable.transform(
+            CloseableIterable.filter(
+                CloseableIterable.concat(ImmutableList.of(positionDeletes1, positionDeletes2)),
+                row -> "file_a.avro".equals(row.get(0, String.class))),
+            row -> row.get(1, Long.class));
     Predicate<StructLike> isDeleted =
-        row ->
-            Deletes.toPositionIndex(
-                    "file_a.avro", ImmutableList.of(positionDeletes1, positionDeletes2))
-                .isDeleted(row.get(0, Long.class));
-
+        row -> Deletes.toPositionIndex(positions).isDeleted(row.get(0, Long.class));
     CloseableIterable<StructLike> actual = CloseableIterable.filter(rows, isDeleted.negate());
 
     assertThat(Iterables.transform(actual, row -> row.get(0, Long.class)))

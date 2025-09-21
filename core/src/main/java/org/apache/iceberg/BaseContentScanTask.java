@@ -22,18 +22,18 @@ import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.ResidualEvaluator;
 import org.apache.iceberg.relocated.com.google.common.base.MoreObjects;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
-import org.apache.iceberg.relocated.com.google.common.collect.Ordering;
+import org.apache.iceberg.util.ArrayUtil;
+import org.apache.iceberg.util.ScanTaskUtil;
 
 abstract class BaseContentScanTask<ThisT extends ContentScanTask<F>, F extends ContentFile<F>>
     implements ContentScanTask<F>, SplittableScanTask<ThisT> {
-
-  private static final Ordering<Comparable<Long>> OFFSET_ORDERING = Ordering.natural();
 
   private final F file;
   private final String schemaString;
   private final String specString;
   private final ResidualEvaluator residuals;
 
+  private transient volatile Schema schema = null;
   private transient volatile PartitionSpec spec = null;
 
   BaseContentScanTask(F file, String schemaString, String specString, ResidualEvaluator residuals) {
@@ -52,12 +52,24 @@ abstract class BaseContentScanTask<ThisT extends ContentScanTask<F>, F extends C
     return file;
   }
 
+  protected Schema schema() {
+    if (schema == null) {
+      synchronized (this) {
+        if (schema == null) {
+          this.schema = SchemaParser.fromJson(schemaString);
+        }
+      }
+    }
+
+    return schema;
+  }
+
   @Override
   public PartitionSpec spec() {
     if (spec == null) {
       synchronized (this) {
         if (spec == null) {
-          this.spec = PartitionSpecParser.fromJson(SchemaParser.fromJson(schemaString), specString);
+          this.spec = PartitionSpecParser.fromJson(schema(), specString);
         }
       }
     }
@@ -71,7 +83,7 @@ abstract class BaseContentScanTask<ThisT extends ContentScanTask<F>, F extends C
 
   @Override
   public long length() {
-    return file.fileSizeInBytes();
+    return ScanTaskUtil.contentSizeInBytes(file);
   }
 
   @Override
@@ -80,12 +92,18 @@ abstract class BaseContentScanTask<ThisT extends ContentScanTask<F>, F extends C
   }
 
   @Override
+  public long estimatedRowsCount() {
+    return estimateRowsCount(length(), file);
+  }
+
+  @Override
   public Iterable<ThisT> split(long targetSplitSize) {
     if (file.format().isSplittable()) {
-      if (file.splitOffsets() != null && OFFSET_ORDERING.isOrdered(file.splitOffsets())) {
+      long[] splitOffsets = splitOffsets(file);
+      if (splitOffsets != null && ArrayUtil.isStrictlyAscending(splitOffsets)) {
         return () ->
             new OffsetsAwareSplitScanTaskIterator<>(
-                self(), length(), file.splitOffsets(), this::newSplitTask);
+                self(), length(), splitOffsets, this::newSplitTask);
       } else {
         return () ->
             new FixedSizeSplitScanTaskIterator<>(
@@ -99,9 +117,24 @@ abstract class BaseContentScanTask<ThisT extends ContentScanTask<F>, F extends C
   @Override
   public String toString() {
     return MoreObjects.toStringHelper(this)
-        .add("file", file().path())
+        .add("file", file().location())
         .add("partition_data", file().partition())
         .add("residual", residual())
         .toString();
+  }
+
+  static long estimateRowsCount(long length, ContentFile<?> file) {
+    long[] splitOffsets = splitOffsets(file);
+    long splitOffset = splitOffsets != null ? splitOffsets[0] : 0L;
+    double scannedFileFraction = ((double) length) / (file.fileSizeInBytes() - splitOffset);
+    return (long) (scannedFileFraction * file.recordCount());
+  }
+
+  private static long[] splitOffsets(ContentFile<?> file) {
+    if (file instanceof BaseFile) {
+      return ((BaseFile<?>) file).splitOffsetArray();
+    } else {
+      return ArrayUtil.toLongArray(file.splitOffsets());
+    }
   }
 }

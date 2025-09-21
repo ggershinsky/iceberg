@@ -19,6 +19,7 @@
 package org.apache.iceberg;
 
 import java.util.List;
+import org.apache.iceberg.util.ScanTaskUtil;
 
 /** A scan task over a range of bytes in a single data file. */
 public interface FileScanTask extends ContentScanTask<DataFile>, SplittableScanTask<FileScanTask> {
@@ -29,9 +30,14 @@ public interface FileScanTask extends ContentScanTask<DataFile>, SplittableScanT
    */
   List<DeleteFile> deletes();
 
+  /** Return the schema for this file scan task. */
+  default Schema schema() {
+    throw new UnsupportedOperationException("Does not support schema getter");
+  }
+
   @Override
   default long sizeBytes() {
-    return length() + deletes().stream().mapToLong(ContentFile::fileSizeInBytes).sum();
+    return length() + ScanTaskUtil.contentSizeInBytes(deletes());
   }
 
   @Override

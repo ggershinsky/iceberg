@@ -18,20 +18,29 @@
  */
 package org.apache.iceberg.spark.sql;
 
+import static org.apache.iceberg.PlanningMode.DISTRIBUTED;
+import static org.apache.iceberg.PlanningMode.LOCAL;
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.iceberg.Parameter;
+import org.apache.iceberg.ParameterizedTestExtension;
+import org.apache.iceberg.Parameters;
+import org.apache.iceberg.PlanningMode;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.spark.SparkCatalogConfig;
 import org.apache.iceberg.spark.SparkSQLProperties;
 import org.apache.iceberg.spark.SparkSchemaUtil;
-import org.apache.iceberg.spark.SparkTestBaseWithCatalog;
 import org.apache.iceberg.spark.SparkWriteOptions;
+import org.apache.iceberg.spark.TestBaseWithCatalog;
 import org.apache.iceberg.spark.data.RandomData;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.sql.Dataset;
@@ -40,12 +49,31 @@ import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.catalyst.analysis.NoSuchTableException;
 import org.apache.spark.sql.internal.SQLConf;
 import org.apache.spark.sql.types.StructType;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 
-public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
+@ExtendWith(ParameterizedTestExtension.class)
+public class TestStoragePartitionedJoins extends TestBaseWithCatalog {
+
+  @Parameters(name = "catalogName = {0}, implementation = {1}, config = {2}, planningMode = {3}")
+  public static Object[][] parameters() {
+    return new Object[][] {
+      {
+        SparkCatalogConfig.HADOOP.catalogName(),
+        SparkCatalogConfig.HADOOP.implementation(),
+        SparkCatalogConfig.HADOOP.properties(),
+        LOCAL
+      },
+      {
+        SparkCatalogConfig.HADOOP.catalogName(),
+        SparkCatalogConfig.HADOOP.implementation(),
+        SparkCatalogConfig.HADOOP.properties(),
+        DISTRIBUTED
+      },
+    };
+  }
 
   private static final String OTHER_TABLE_NAME = "other_table";
 
@@ -84,12 +112,15 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
           SparkSQLProperties.PRESERVE_DATA_GROUPING,
           "true");
 
-  @BeforeClass
+  @Parameter(index = 3)
+  private PlanningMode planningMode;
+
+  @BeforeAll
   public static void setupSparkConf() {
     spark.conf().set("spark.sql.shuffle.partitions", "4");
   }
 
-  @After
+  @AfterEach
   public void removeTables() {
     sql("DROP TABLE IF EXISTS %s", tableName);
     sql("DROP TABLE IF EXISTS %s", tableName(OTHER_TABLE_NAME));
@@ -97,107 +128,107 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
 
   // TODO: add tests for truncate transforms once SPARK-40295 is released
 
-  @Test
+  @TestTemplate
   public void testJoinsWithBucketingOnByteColumn() throws NoSuchTableException {
     checkJoin("byte_col", "TINYINT", "bucket(4, byte_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithBucketingOnShortColumn() throws NoSuchTableException {
     checkJoin("short_col", "SMALLINT", "bucket(4, short_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithBucketingOnIntColumn() throws NoSuchTableException {
     checkJoin("int_col", "INT", "bucket(16, int_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithBucketingOnLongColumn() throws NoSuchTableException {
     checkJoin("long_col", "BIGINT", "bucket(16, long_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithBucketingOnTimestampColumn() throws NoSuchTableException {
     checkJoin("timestamp_col", "TIMESTAMP", "bucket(16, timestamp_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithBucketingOnTimestampNtzColumn() throws NoSuchTableException {
     checkJoin("timestamp_col", "TIMESTAMP_NTZ", "bucket(16, timestamp_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithBucketingOnDateColumn() throws NoSuchTableException {
     checkJoin("date_col", "DATE", "bucket(8, date_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithBucketingOnDecimalColumn() throws NoSuchTableException {
     checkJoin("decimal_col", "DECIMAL(20, 2)", "bucket(8, decimal_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithBucketingOnBinaryColumn() throws NoSuchTableException {
     checkJoin("binary_col", "BINARY", "bucket(8, binary_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithYearsOnTimestampColumn() throws NoSuchTableException {
     checkJoin("timestamp_col", "TIMESTAMP", "years(timestamp_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithYearsOnTimestampNtzColumn() throws NoSuchTableException {
     checkJoin("timestamp_col", "TIMESTAMP_NTZ", "years(timestamp_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithYearsOnDateColumn() throws NoSuchTableException {
     checkJoin("date_col", "DATE", "years(date_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithMonthsOnTimestampColumn() throws NoSuchTableException {
     checkJoin("timestamp_col", "TIMESTAMP", "months(timestamp_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithMonthsOnTimestampNtzColumn() throws NoSuchTableException {
     checkJoin("timestamp_col", "TIMESTAMP_NTZ", "months(timestamp_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithMonthsOnDateColumn() throws NoSuchTableException {
     checkJoin("date_col", "DATE", "months(date_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithDaysOnTimestampColumn() throws NoSuchTableException {
     checkJoin("timestamp_col", "TIMESTAMP", "days(timestamp_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithDaysOnTimestampNtzColumn() throws NoSuchTableException {
     checkJoin("timestamp_col", "TIMESTAMP_NTZ", "days(timestamp_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithDaysOnDateColumn() throws NoSuchTableException {
     checkJoin("date_col", "DATE", "days(date_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithHoursOnTimestampColumn() throws NoSuchTableException {
     checkJoin("timestamp_col", "TIMESTAMP", "hours(timestamp_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithHoursOnTimestampNtzColumn() throws NoSuchTableException {
     checkJoin("timestamp_col", "TIMESTAMP_NTZ", "hours(timestamp_col)");
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithMultipleTransformTypes() throws NoSuchTableException {
     String createTableStmt =
         "CREATE TABLE %s ("
@@ -286,7 +317,7 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
         tableName(OTHER_TABLE_NAME));
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithCompatibleSpecEvolution() {
     // create a table with an empty spec
     sql(
@@ -339,7 +370,7 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
         tableName(OTHER_TABLE_NAME));
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithIncompatibleSpecs() {
     sql(
         "CREATE TABLE %s (id BIGINT, int_col INT, dep STRING)"
@@ -379,7 +410,7 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
         tableName(OTHER_TABLE_NAME));
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithUnpartitionedTables() {
     sql(
         "CREATE TABLE %s (id BIGINT, int_col INT, dep STRING)"
@@ -419,7 +450,7 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
         tableName(OTHER_TABLE_NAME));
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithEmptyTable() {
     sql(
         "CREATE TABLE %s (id BIGINT, int_col INT, dep STRING)"
@@ -451,7 +482,7 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
         tableName(OTHER_TABLE_NAME));
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithOneSplitTables() {
     sql(
         "CREATE TABLE %s (id BIGINT, int_col INT, dep STRING)"
@@ -485,7 +516,7 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
         tableName(OTHER_TABLE_NAME));
   }
 
-  @Test
+  @TestTemplate
   public void testJoinsWithMismatchingPartitionKeys() {
     sql(
         "CREATE TABLE %s (id BIGINT, int_col INT, dep STRING)"
@@ -519,7 +550,7 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
         tableName(OTHER_TABLE_NAME));
   }
 
-  @Test
+  @TestTemplate
   public void testAggregates() throws NoSuchTableException {
     sql(
         "CREATE TABLE %s (id BIGINT, int_col INT, dep STRING)"
@@ -564,6 +595,7 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
         sourceColumnType,
         transform,
         tablePropsAsString(TABLE_PROPERTIES));
+    configurePlanningMode(tableName, planningMode);
 
     sql(
         createTableStmt,
@@ -572,6 +604,7 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
         sourceColumnType,
         transform,
         tablePropsAsString(TABLE_PROPERTIES));
+    configurePlanningMode(tableName(OTHER_TABLE_NAME), planningMode);
 
     Table table = validationCatalog.loadTable(tableIdent);
     Dataset<Row> dataDF = randomDataDF(table.schema(), 200);
@@ -585,7 +618,7 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
             + "FROM %s t1 "
             + "INNER JOIN %s t2 "
             + "ON t1.id = t2.id AND t1.%s = t2.%s "
-            + "ORDER BY t1.id, t1.%s",
+            + "ORDER BY t1.id, t1.%s, t1.salary",
         sourceColumnName,
         tableName,
         tableName(OTHER_TABLE_NAME),
@@ -608,10 +641,9 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
         () -> {
           String plan = executeAndKeepPlan(query, args).toString();
           int actualNumShuffles = StringUtils.countMatches(plan, "Exchange");
-          Assert.assertEquals(
-              "Number of shuffles with enabled SPJ must match",
-              expectedNumShufflesWithSPJ,
-              actualNumShuffles);
+          assertThat(actualNumShuffles)
+              .as("Number of shuffles with enabled SPJ must match")
+              .isEqualTo(expectedNumShufflesWithSPJ);
 
           rowsWithSPJ.set(sql(query, args));
         });
@@ -621,10 +653,9 @@ public class TestStoragePartitionedJoins extends SparkTestBaseWithCatalog {
         () -> {
           String plan = executeAndKeepPlan(query, args).toString();
           int actualNumShuffles = StringUtils.countMatches(plan, "Exchange");
-          Assert.assertEquals(
-              "Number of shuffles with disabled SPJ must match",
-              expectedNumShufflesWithoutSPJ,
-              actualNumShuffles);
+          assertThat(actualNumShuffles)
+              .as("Number of shuffles with disabled SPJ must match")
+              .isEqualTo(expectedNumShufflesWithoutSPJ);
 
           rowsWithoutSPJ.set(sql(query, args));
         });

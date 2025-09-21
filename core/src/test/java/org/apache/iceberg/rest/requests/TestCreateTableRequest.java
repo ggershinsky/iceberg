@@ -20,6 +20,8 @@ package org.apache.iceberg.rest.requests;
 
 import static org.apache.iceberg.types.Types.NestedField.optional;
 import static org.apache.iceberg.types.Types.NestedField.required;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import java.util.Map;
@@ -30,11 +32,11 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.SortOrderParser;
+import org.apache.iceberg.expressions.Literal;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.rest.RequestResponseTestBase;
 import org.apache.iceberg.types.Types;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 public class TestCreateTableRequest extends RequestResponseTestBase<CreateTableRequest> {
@@ -46,7 +48,12 @@ public class TestCreateTableRequest extends RequestResponseTestBase<CreateTableR
   private static final String SAMPLE_LOCATION = "file://tmp/location/";
   private static final Schema SAMPLE_SCHEMA =
       new Schema(
-          required(1, "id", Types.IntegerType.get()), optional(2, "data", Types.StringType.get()));
+          required("id")
+              .withId(1)
+              .ofType(Types.IntegerType.get())
+              .withWriteDefault(Literal.of(1))
+              .build(),
+          optional("data").withId(2).ofType(Types.StringType.get()).build());
   private static final String SAMPLE_SCHEMA_JSON = SchemaParser.toJson(SAMPLE_SCHEMA);
   private static final PartitionSpec SAMPLE_SPEC =
       PartitionSpec.builderFor(SAMPLE_SCHEMA).bucket("id", 16).build();
@@ -58,7 +65,7 @@ public class TestCreateTableRequest extends RequestResponseTestBase<CreateTableR
   public void testRoundTripSerDe() throws JsonProcessingException {
     String fullJsonRaw =
         "{\"name\":\"test_tbl\",\"location\":\"file://tmp/location/\",\"schema\":{\"type\":\"struct\","
-            + "\"schema-id\":0,\"fields\":[{\"id\":1,\"name\":\"id\",\"required\":true,\"type\":\"int\"},"
+            + "\"schema-id\":0,\"fields\":[{\"id\":1,\"name\":\"id\",\"required\":true,\"type\":\"int\",\"write-default\":1},"
             + "{\"id\":2,\"name\":\"data\",\"required\":false,\"type\":\"string\"}]},\"partition-spec\":{\"spec-id\":0,"
             + "\"fields\":[{\"name\":\"id_bucket\",\"transform\":\"bucket[16]\",\"source-id\":1,\"field-id\":1000}]},"
             + "\"write-order\":{\"order-id\":1,\"fields\":"
@@ -167,7 +174,7 @@ public class TestCreateTableRequest extends RequestResponseTestBase<CreateTableR
     String jsonMissingSchema =
         "{\"name\":\"foo\",\"location\":null,\"partition-spec\":null,\"write-order\":null,\"properties\":{},"
             + "\"stage-create\":false}";
-    Assertions.assertThatThrownBy(() -> deserialize(jsonMissingSchema))
+    assertThatThrownBy(() -> deserialize(jsonMissingSchema))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Invalid schema: null");
 
@@ -176,7 +183,7 @@ public class TestCreateTableRequest extends RequestResponseTestBase<CreateTableR
             "{\"location\":null,\"schema\":%s,\"spec\":null,\"write-order\":null,\"properties\":{},"
                 + "\"stage-create\":false}",
             SAMPLE_SCHEMA_JSON);
-    Assertions.assertThatThrownBy(() -> deserialize(jsonMissingName))
+    assertThatThrownBy(() -> deserialize(jsonMissingName))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Invalid table name: null");
 
@@ -185,53 +192,52 @@ public class TestCreateTableRequest extends RequestResponseTestBase<CreateTableR
             "{\"name\":\"foo\",\"location\":null,\"schema\":%s,\"partition-spec\":null,\"write-order\":null,"
                 + "\"properties\":[],\"stage-create\":false}",
             SAMPLE_SCHEMA_JSON);
-    Assertions.assertThatThrownBy(() -> deserialize(jsonIncorrectTypeForProperties))
+    assertThatThrownBy(() -> deserialize(jsonIncorrectTypeForProperties))
         .isInstanceOf(JsonProcessingException.class)
         .hasMessageStartingWith("Cannot deserialize value of type");
 
-    Assertions.assertThatThrownBy(() -> deserialize("{}"))
+    assertThatThrownBy(() -> deserialize("{}"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Invalid table name: null");
 
-    Assertions.assertThatThrownBy(() -> deserialize(null))
+    assertThatThrownBy(() -> deserialize(null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("argument \"content\" is null");
   }
 
   @Test
   public void testBuilderDoesNotBuildInvalidRequests() {
-    Assertions.assertThatThrownBy(() -> CreateTableRequest.builder().withName(null))
+    assertThatThrownBy(() -> CreateTableRequest.builder().withName(null))
         .isInstanceOf(NullPointerException.class)
         .hasMessage("Invalid name: null");
 
-    Assertions.assertThatThrownBy(() -> CreateTableRequest.builder().withSchema(null))
+    assertThatThrownBy(() -> CreateTableRequest.builder().withSchema(null))
         .isInstanceOf(NullPointerException.class)
         .hasMessage("Invalid schema: null");
 
-    Assertions.assertThatThrownBy(() -> CreateTableRequest.builder().setProperties(null))
+    assertThatThrownBy(() -> CreateTableRequest.builder().setProperties(null))
         .isInstanceOf(NullPointerException.class)
         .hasMessage("Invalid collection of properties: null");
 
     Map<String, String> mapWithNullKey = Maps.newHashMap();
     mapWithNullKey.put(null, "hello");
 
-    Assertions.assertThatThrownBy(() -> CreateTableRequest.builder().setProperties(mapWithNullKey))
+    assertThatThrownBy(() -> CreateTableRequest.builder().setProperties(mapWithNullKey))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Invalid property: null");
 
     Map<String, String> mapWithNullValue = Maps.newHashMap();
     mapWithNullValue.put("a", null);
     mapWithNullValue.put("b", "b");
-    Assertions.assertThatThrownBy(
-            () -> CreateTableRequest.builder().setProperties(mapWithNullValue).build())
+    assertThatThrownBy(() -> CreateTableRequest.builder().setProperties(mapWithNullValue).build())
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Invalid value for properties [a]: null");
 
-    Assertions.assertThatThrownBy(() -> CreateTableRequest.builder().setProperty("foo", null))
+    assertThatThrownBy(() -> CreateTableRequest.builder().setProperty("foo", null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Invalid value for property foo: null");
 
-    Assertions.assertThatThrownBy(() -> CreateTableRequest.builder().setProperty(null, "foo"))
+    assertThatThrownBy(() -> CreateTableRequest.builder().setProperty(null, "foo"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Invalid property: null");
   }
@@ -258,25 +264,23 @@ public class TestCreateTableRequest extends RequestResponseTestBase<CreateTableR
 
   @Override
   public void assertEquals(CreateTableRequest actual, CreateTableRequest expected) {
-    Assertions.assertThat(actual.name()).as("Name should be the same").isEqualTo(expected.name());
-    Assertions.assertThat(actual.location())
+    assertThat(actual.name()).as("Name should be the same").isEqualTo(expected.name());
+    assertThat(actual.location())
         .as("Location should be the same if provided")
         .isEqualTo(expected.location());
-    Assertions.assertThat(
+    assertThat(
             expected.schema().sameSchema(actual.schema())
                 && expected.schema().schemaId() == actual.schema().schemaId())
         .as("Schemas should be equivalent and have same schema id")
         .isTrue();
-    Assertions.assertThat(actual.spec())
-        .as("Partition spec should be equal")
-        .isEqualTo(expected.spec());
-    Assertions.assertThat(actual.writeOrder())
+    assertThat(actual.spec()).as("Partition spec should be equal").isEqualTo(expected.spec());
+    assertThat(actual.writeOrder())
         .as("Write [sort] order should be the same")
         .isEqualTo(expected.writeOrder());
-    Assertions.assertThat(actual.properties())
+    assertThat(actual.properties())
         .as("Properties should be the same")
         .isEqualTo(expected.properties());
-    Assertions.assertThat(actual.stageCreate())
+    assertThat(actual.stageCreate())
         .as("Stage create should be equal")
         .isEqualTo(expected.stageCreate());
   }

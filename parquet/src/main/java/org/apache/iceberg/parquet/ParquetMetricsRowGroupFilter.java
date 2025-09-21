@@ -27,6 +27,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.expressions.Binder;
+import org.apache.iceberg.expressions.Bound;
 import org.apache.iceberg.expressions.BoundReference;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.ExpressionVisitors;
@@ -154,10 +155,11 @@ public class ParquetMetricsRowGroupFilter {
       // if the column has no non-null values, the expression cannot match
       int id = ref.fieldId();
 
-      // When filtering nested types notNull() is implicit filter passed even though complex
-      // filters aren't pushed down in Parquet. Leave all nested column type filters to be
-      // evaluated post scan.
-      if (schema.findType(id) instanceof Type.NestedType) {
+      // When filtering nested types or variant types, notNull() is an implicit filter passed
+      // even though complex filters aren't pushed down in Parquet. Leave these type filters
+      // to be evaluated post scan.
+      Type type = schema.findType(id);
+      if (type instanceof Type.NestedType || type.isVariantType()) {
         return ROWS_MIGHT_MATCH;
       }
 
@@ -556,6 +558,11 @@ public class ParquetMetricsRowGroupFilter {
     @SuppressWarnings("unchecked")
     private <T> T max(Statistics<?> statistics, int id) {
       return (T) conversions.get(id).apply(statistics.genericGetMax());
+    }
+
+    @Override
+    public <T> Boolean handleNonReference(Bound<T> term) {
+      return ROWS_MIGHT_MATCH;
     }
   }
 

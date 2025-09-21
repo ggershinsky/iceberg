@@ -21,6 +21,7 @@ package org.apache.iceberg.hive;
 import static java.nio.file.Files.createTempDirectory;
 import static java.nio.file.attribute.PosixFilePermissions.asFileAttribute;
 import static java.nio.file.attribute.PosixFilePermissions.fromString;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;
 import java.io.IOException;
@@ -46,13 +47,13 @@ import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.common.DynConstructors;
 import org.apache.iceberg.common.DynMethods;
 import org.apache.iceberg.hadoop.Util;
+import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.server.TServer;
 import org.apache.thrift.server.TThreadPoolServer;
 import org.apache.thrift.transport.TServerSocket;
 import org.apache.thrift.transport.TTransportFactory;
-import org.junit.Assert;
 
 public class TestHiveMetastore {
 
@@ -112,7 +113,7 @@ public class TestHiveMetastore {
                     FileSystem fs = Util.getFs(localDirPath, new Configuration());
                     String errMsg = "Failed to delete " + localDirPath;
                     try {
-                      Assert.assertTrue(errMsg, fs.delete(localDirPath, true));
+                      assertThat(fs.delete(localDirPath, true)).as(errMsg).isTrue();
                     } catch (IOException e) {
                       throw new RuntimeException(errMsg, e);
                     }
@@ -152,10 +153,21 @@ public class TestHiveMetastore {
    * @param poolSize The number of threads in the executor pool
    */
   public void start(HiveConf conf, int poolSize) {
+    start(conf, poolSize, false);
+  }
+
+  /**
+   * Starts a TestHiveMetastore with a provided connection pool size and HiveConf.
+   *
+   * @param conf The hive configuration to use
+   * @param poolSize The number of threads in the executor pool
+   * @param directSql Used to turn on directSql
+   */
+  public void start(HiveConf conf, int poolSize, boolean directSql) {
     try {
       TServerSocket socket = new TServerSocket(0);
       int port = socket.getServerSocket().getLocalPort();
-      initConf(conf, port);
+      initConf(conf, port, directSql);
 
       this.hiveConf = conf;
       this.server = newThriftServer(socket, poolSize, hiveConf);
@@ -260,26 +272,31 @@ public class TestHiveMetastore {
     return new TThreadPoolServer(args);
   }
 
-  private void initConf(HiveConf conf, int port) {
+  private void initConf(HiveConf conf, int port, boolean directSql) {
     conf.set(HiveConf.ConfVars.METASTOREURIS.varname, "thrift://localhost:" + port);
     conf.set(
         HiveConf.ConfVars.METASTOREWAREHOUSE.varname, "file:" + HIVE_LOCAL_DIR.getAbsolutePath());
-    conf.set(HiveConf.ConfVars.METASTORE_TRY_DIRECT_SQL.varname, "false");
+    conf.set(HiveConf.ConfVars.METASTORE_TRY_DIRECT_SQL.varname, String.valueOf(directSql));
     conf.set(HiveConf.ConfVars.METASTORE_DISALLOW_INCOMPATIBLE_COL_TYPE_CHANGES.varname, "false");
     conf.set("iceberg.hive.client-pool-size", "2");
     // Setting this to avoid thrift exception during running Iceberg tests outside Iceberg.
     conf.set(
         HiveConf.ConfVars.HIVE_IN_TEST.varname, HiveConf.ConfVars.HIVE_IN_TEST.getDefaultValue());
+    conf.set("datanucleus.connectionPoolingType", "DBCP");
   }
 
   private static void setupMetastoreDB(String dbURL) throws SQLException, IOException {
-    Connection connection = DriverManager.getConnection(dbURL);
-    ScriptRunner scriptRunner = new ScriptRunner(connection, true, true);
-
-    ClassLoader classLoader = ClassLoader.getSystemClassLoader();
-    InputStream inputStream = classLoader.getResourceAsStream("hive-schema-3.1.0.derby.sql");
-    try (Reader reader = new InputStreamReader(inputStream)) {
-      scriptRunner.runScript(reader);
+    try (Connection connection = DriverManager.getConnection(dbURL)) {
+      ScriptRunner scriptRunner = new ScriptRunner(connection, true, true);
+      try (InputStream inputStream =
+              TestHiveMetastore.class
+                  .getClassLoader()
+                  .getResourceAsStream("hive-schema-3.1.0.derby.sql");
+          Reader reader =
+              new InputStreamReader(
+                  Preconditions.checkNotNull(inputStream, "Invalid input stream: null"))) {
+        scriptRunner.runScript(reader);
+      }
     }
   }
 }

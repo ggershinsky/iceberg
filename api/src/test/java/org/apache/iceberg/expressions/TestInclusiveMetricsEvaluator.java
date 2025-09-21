@@ -39,6 +39,7 @@ import static org.apache.iceberg.types.Conversions.toByteBuffer;
 import static org.apache.iceberg.types.Types.NestedField.optional;
 import static org.apache.iceberg.types.Types.NestedField.required;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
 import org.apache.iceberg.DataFile;
@@ -52,7 +53,6 @@ import org.apache.iceberg.types.Types;
 import org.apache.iceberg.types.Types.IntegerType;
 import org.apache.iceberg.types.Types.StringType;
 import org.apache.iceberg.util.UnicodeUtil;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 public class TestInclusiveMetricsEvaluator {
@@ -129,9 +129,9 @@ public class TestInclusiveMetricsEvaluator {
           Row.of(),
           50,
           // any value counts, including nulls
-          ImmutableMap.of(3, 20L),
+          ImmutableMap.of(3, 50L),
           // null value counts
-          ImmutableMap.of(3, 2L),
+          ImmutableMap.of(3, 0L),
           // nan value counts
           null,
           // lower bounds
@@ -145,9 +145,9 @@ public class TestInclusiveMetricsEvaluator {
           Row.of(),
           50,
           // any value counts, including nulls
-          ImmutableMap.of(3, 20L),
+          ImmutableMap.of(3, 50L),
           // null value counts
-          ImmutableMap.of(3, 2L),
+          ImmutableMap.of(3, 0L),
           // nan value counts
           null,
           // lower bounds
@@ -161,15 +161,31 @@ public class TestInclusiveMetricsEvaluator {
           Row.of(),
           50,
           // any value counts, including nulls
-          ImmutableMap.of(3, 20L),
+          ImmutableMap.of(3, 50L),
           // null value counts
-          ImmutableMap.of(3, 2L),
+          ImmutableMap.of(3, 0L),
           // nan value counts
           null,
           // lower bounds
           ImmutableMap.of(3, toByteBuffer(StringType.get(), "abc")),
           // upper bounds
           ImmutableMap.of(3, toByteBuffer(StringType.get(), "イロハニホヘト")));
+
+  private static final DataFile FILE_5 =
+      new TestDataFile(
+          "file_4.avro",
+          Row.of(),
+          50,
+          // any value counts, including nulls
+          ImmutableMap.of(3, 50L),
+          // null value counts
+          ImmutableMap.of(3, 0L),
+          // nan value counts
+          null,
+          // lower bounds
+          ImmutableMap.of(3, toByteBuffer(StringType.get(), "abc")),
+          // upper bounds
+          ImmutableMap.of(3, toByteBuffer(StringType.get(), "abcdefghi")));
 
   @Test
   public void testAllNulls() {
@@ -295,7 +311,7 @@ public class TestInclusiveMetricsEvaluator {
 
   @Test
   public void testMissingColumn() {
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () -> new InclusiveMetricsEvaluator(SCHEMA, lessThan("missing", 5)).eval(FILE))
         .isInstanceOf(ValidationException.class)
         .hasMessageContaining("Cannot find field 'missing'");
@@ -612,7 +628,7 @@ public class TestInclusiveMetricsEvaluator {
 
   @Test
   public void testCaseSensitiveIntegerNotEqRewritten() {
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () -> new InclusiveMetricsEvaluator(SCHEMA, not(equal("ID", 5)), true).eval(FILE))
         .isInstanceOf(ValidationException.class)
         .hasMessageContaining("Cannot find field 'ID'");
@@ -731,6 +747,14 @@ public class TestInclusiveMetricsEvaluator {
         new InclusiveMetricsEvaluator(SCHEMA, notStartsWith("required", aboveMax), true)
             .eval(FILE_4);
     assertThat(shouldRead).as("Should read: range matches").isTrue();
+
+    shouldRead =
+        new InclusiveMetricsEvaluator(SCHEMA, notStartsWith("required", "abc"), true).eval(FILE_5);
+    assertThat(shouldRead).as("Should not read: all strings start with prefix").isFalse();
+
+    shouldRead =
+        new InclusiveMetricsEvaluator(SCHEMA, notStartsWith("required", "abcd"), true).eval(FILE_5);
+    assertThat(shouldRead).as("Should not read: lower shorter than prefix, cannot match").isTrue();
   }
 
   @Test

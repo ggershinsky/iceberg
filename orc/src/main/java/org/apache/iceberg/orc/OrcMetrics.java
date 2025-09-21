@@ -124,10 +124,15 @@ public class OrcMetrics {
       final Stream<FieldMetrics<?>> fieldMetricsStream,
       final MetricsConfig metricsConfig,
       final NameMapping mapping) {
-    final TypeDescription orcSchemaWithIds =
-        (!ORCSchemaUtil.hasIds(orcSchema) && mapping != null)
-            ? ORCSchemaUtil.applyNameMapping(orcSchema, mapping)
-            : orcSchema;
+    TypeDescription orcSchemaWithIds;
+    if (ORCSchemaUtil.hasIds(orcSchema)) {
+      orcSchemaWithIds = orcSchema;
+    } else if (mapping != null) {
+      orcSchemaWithIds = ORCSchemaUtil.applyNameMapping(orcSchema, mapping);
+    } else {
+      return new Metrics(numOfRows);
+    }
+
     final Set<Integer> statsColumns = statsColumns(orcSchemaWithIds);
     final MetricsConfig effectiveMetricsConfig =
         Optional.ofNullable(metricsConfig).orElseGet(MetricsConfig::getDefault);
@@ -135,13 +140,10 @@ public class OrcMetrics {
     Map<Integer, Long> valueCounts = Maps.newHashMapWithExpectedSize(colStats.length);
     Map<Integer, Long> nullCounts = Maps.newHashMapWithExpectedSize(colStats.length);
 
-    if (!ORCSchemaUtil.hasIds(orcSchemaWithIds)) {
-      return new Metrics(numOfRows, columnSizes, valueCounts, nullCounts, null, null, null);
-    }
-
     final Schema schema = ORCSchemaUtil.convert(orcSchemaWithIds);
     Map<Integer, ByteBuffer> lowerBounds = Maps.newHashMap();
     Map<Integer, ByteBuffer> upperBounds = Maps.newHashMap();
+    Map<Integer, Type> originalTypes = Maps.newHashMap();
 
     Map<Integer, FieldMetrics<?>> fieldMetricsMap =
         Optional.ofNullable(fieldMetricsStream)
@@ -160,16 +162,17 @@ public class OrcMetrics {
 
         final MetricsMode metricsMode =
             MetricsUtil.metricsMode(schema, effectiveMetricsConfig, icebergCol.fieldId());
-        columnSizes.put(fieldId, colStat.getBytesOnDisk());
 
-        if (metricsMode == MetricsModes.None.get()) {
+        if (metricsMode == MetricsModes.None.get() || inMapOrList(orcCol)) {
           continue;
         }
+
+        columnSizes.put(fieldId, colStat.getBytesOnDisk());
 
         if (statsColumns.contains(fieldId)) {
           // Since ORC does not track null values nor repeated ones, the value count for columns in
           // containers (maps, list) may be larger than what it actually is, however these are not
-          // used in experssions right now. For such cases, we use the value number of values
+          // used in expressions right now. For such cases, we use the value number of values
           // directly stored in ORC.
           if (colStat.hasNull()) {
             nullCounts.put(fieldId, numOfRows - colStat.getNumberOfValues());
@@ -191,6 +194,8 @@ public class OrcMetrics {
                         icebergCol.type(), colStat, metricsMode, fieldMetricsMap.get(fieldId))
                     : Optional.empty();
             orcMax.ifPresent(byteBuffer -> upperBounds.put(icebergCol.fieldId(), byteBuffer));
+
+            originalTypes.put(fieldId, icebergCol.type());
           }
         }
       }
@@ -204,7 +209,19 @@ public class OrcMetrics {
         MetricsUtil.createNanValueCounts(
             fieldMetricsMap.values().stream(), effectiveMetricsConfig, schema),
         lowerBounds,
-        upperBounds);
+        upperBounds,
+        originalTypes);
+  }
+
+  private static boolean inMapOrList(TypeDescription orcCol) {
+    TypeDescription current = orcCol;
+    while ((current = current.getParent()) != null) {
+      if (current.getCategory() != TypeDescription.Category.STRUCT) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private static Optional<ByteBuffer> fromOrcMin(

@@ -20,6 +20,8 @@ package org.apache.iceberg.data.parquet;
 
 import static org.apache.iceberg.Files.localInput;
 import static org.apache.iceberg.types.Types.NestedField.optional;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.File;
 import java.io.IOException;
@@ -33,7 +35,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.iceberg.Files;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.avro.AvroSchemaUtil;
-import org.apache.iceberg.data.DataTest;
+import org.apache.iceberg.data.DataTestBase;
 import org.apache.iceberg.data.DataTestHelpers;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.RandomGenericData;
@@ -48,51 +50,69 @@ import org.apache.parquet.avro.AvroParquetWriter;
 import org.apache.parquet.crypto.FileEncryptionProperties;
 import org.apache.parquet.crypto.ParquetCryptoRuntimeException;
 import org.apache.parquet.hadoop.ParquetWriter;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-public class TestParquetEncryptionWithWriteSupport extends DataTest {
-  private static final ByteBuffer fileDek = ByteBuffer.allocate(16);
-  private static final ByteBuffer aadPrefix = ByteBuffer.allocate(16);
+public class TestParquetEncryptionWithWriteSupport extends DataTestBase {
+  private static final ByteBuffer FILE_DEK = ByteBuffer.allocate(16);
+  private static final ByteBuffer AAD_PREFIX = ByteBuffer.allocate(16);
+
+  @Override
+  protected boolean supportsUnknown() {
+    return true;
+  }
+
+  @Override
+  protected boolean supportsTimestampNanos() {
+    return true;
+  }
+
+  @Override
+  protected boolean supportsVariant() {
+    return true;
+  }
 
   @Override
   protected void writeAndValidate(Schema schema) throws IOException {
     List<Record> expected = RandomGenericData.generate(schema, 100, 0L);
+    writeAndValidate(schema, expected);
+  }
 
-    File testFile = temp.newFile();
-    Assert.assertTrue("Delete should succeed", testFile.delete());
+  @Override
+  protected void writeAndValidate(Schema schema, List<Record> expected) throws IOException {
+
+    File testFile = temp.resolve("test-file" + System.nanoTime()).toFile();
 
     SecureRandom rand = new SecureRandom();
-    rand.nextBytes(fileDek.array());
-    rand.nextBytes(aadPrefix.array());
+    rand.nextBytes(FILE_DEK.array());
+    rand.nextBytes(AAD_PREFIX.array());
 
     try (FileAppender<Record> appender =
         Parquet.write(Files.localOutput(testFile))
             .schema(schema)
-            .withFileEncryptionKey(fileDek)
-            .withAADPrefix(aadPrefix)
-            .createWriterFunc(GenericParquetWriter::buildWriter)
+            .withFileEncryptionKey(FILE_DEK)
+            .withAADPrefix(AAD_PREFIX)
+            .createWriterFunc(fileSchema -> GenericParquetWriter.create(schema, fileSchema))
             .build()) {
       appender.addAll(expected);
     }
 
-    Assert.assertThrows(
-        "Decrypted without keys",
-        ParquetCryptoRuntimeException.class,
-        () ->
-            Parquet.read(localInput(testFile))
-                .project(schema)
-                .createReaderFunc(
-                    fileSchema -> GenericParquetReaders.buildReader(schema, fileSchema))
-                .build()
-                .iterator());
+    assertThatThrownBy(
+            () ->
+                Parquet.read(localInput(testFile))
+                    .project(schema)
+                    .createReaderFunc(
+                        fileSchema -> GenericParquetReaders.buildReader(schema, fileSchema))
+                    .build()
+                    .iterator())
+        .hasMessage("Trying to read file with encrypted footer. No keys available")
+        .isInstanceOf(ParquetCryptoRuntimeException.class);
 
     List<Record> rows;
     try (CloseableIterable<Record> reader =
         Parquet.read(Files.localInput(testFile))
             .project(schema)
-            .withFileEncryptionKey(fileDek)
-            .withAADPrefix(aadPrefix)
+            .withFileEncryptionKey(FILE_DEK)
+            .withAADPrefix(AAD_PREFIX)
             .createReaderFunc(fileSchema -> GenericParquetReaders.buildReader(schema, fileSchema))
             .build()) {
       rows = Lists.newArrayList(reader);
@@ -106,8 +126,8 @@ public class TestParquetEncryptionWithWriteSupport extends DataTest {
     try (CloseableIterable<Record> reader =
         Parquet.read(Files.localInput(testFile))
             .project(schema)
-            .withFileEncryptionKey(fileDek)
-            .withAADPrefix(aadPrefix)
+            .withFileEncryptionKey(FILE_DEK)
+            .withAADPrefix(AAD_PREFIX)
             .reuseContainers()
             .createReaderFunc(fileSchema -> GenericParquetReaders.buildReader(schema, fileSchema))
             .build()) {
@@ -129,14 +149,15 @@ public class TestParquetEncryptionWithWriteSupport extends DataTest {
             optional(2, "topbytes", Types.BinaryType.get()));
     org.apache.avro.Schema avroSchema = AvroSchemaUtil.convert(schema.asStruct());
 
-    File testFile = temp.newFile();
-    Assert.assertTrue(testFile.delete());
+    File testFile = temp.resolve("test-file" + System.nanoTime()).toFile();
 
     SecureRandom rand = new SecureRandom();
-    rand.nextBytes(fileDek.array());
-    rand.nextBytes(aadPrefix.array());
+    rand.nextBytes(FILE_DEK.array());
+    rand.nextBytes(AAD_PREFIX.array());
     FileEncryptionProperties fileEncryptionProperties =
-        FileEncryptionProperties.builder(fileDek.array()).withAADPrefix(aadPrefix.array()).build();
+        FileEncryptionProperties.builder(FILE_DEK.array())
+            .withAADPrefix(AAD_PREFIX.array())
+            .build();
 
     ParquetWriter<org.apache.avro.generic.GenericRecord> writer =
         AvroParquetWriter.<org.apache.avro.generic.GenericRecord>builder(new Path(testFile.toURI()))
@@ -163,18 +184,18 @@ public class TestParquetEncryptionWithWriteSupport extends DataTest {
     try (CloseableIterable<Record> reader =
         Parquet.read(Files.localInput(testFile))
             .project(schema)
-            .withFileEncryptionKey(fileDek)
-            .withAADPrefix(aadPrefix)
+            .withFileEncryptionKey(FILE_DEK)
+            .withAADPrefix(AAD_PREFIX)
             .reuseContainers()
             .createReaderFunc(fileSchema -> GenericParquetReaders.buildReader(schema, fileSchema))
             .build()) {
       CloseableIterator it = reader.iterator();
-      Assert.assertTrue("Should have at least one row", it.hasNext());
+      assertThat(it).hasNext();
       while (it.hasNext()) {
         GenericRecord actualRecord = (GenericRecord) it.next();
-        Assert.assertEquals(actualRecord.get(0, ArrayList.class).get(0), expectedBinary);
-        Assert.assertEquals(actualRecord.get(1, ByteBuffer.class), expectedBinary);
-        Assert.assertFalse("Should not have more than one row", it.hasNext());
+        assertThat(actualRecord.get(0, ArrayList.class)).first().isEqualTo(expectedBinary);
+        assertThat(actualRecord.get(1, ByteBuffer.class)).isEqualTo(expectedBinary);
+        assertThat(it).isExhausted();
       }
     }
   }

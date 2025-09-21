@@ -20,15 +20,13 @@ package org.apache.iceberg.spark.source;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.math.BigDecimal;
-import java.nio.ByteBuffer;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-import org.apache.avro.generic.GenericData;
-import org.apache.avro.util.Utf8;
 import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.ContentScanTask;
 import org.apache.iceberg.DeleteFile;
@@ -40,7 +38,9 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.StructLike;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
+import org.apache.iceberg.data.BaseDeleteLoader;
 import org.apache.iceberg.data.DeleteFilter;
+import org.apache.iceberg.data.DeleteLoader;
 import org.apache.iceberg.deletes.DeleteCounter;
 import org.apache.iceberg.encryption.EncryptedFiles;
 import org.apache.iceberg.encryption.EncryptedInputFile;
@@ -50,17 +50,13 @@ import org.apache.iceberg.mapping.NameMapping;
 import org.apache.iceberg.mapping.NameMappingParser;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.spark.SparkExecutorCache;
 import org.apache.iceberg.spark.SparkSchemaUtil;
-import org.apache.iceberg.types.Type;
-import org.apache.iceberg.types.Types.NestedField;
+import org.apache.iceberg.spark.SparkUtil;
 import org.apache.iceberg.types.Types.StructType;
-import org.apache.iceberg.util.ByteBuffers;
 import org.apache.iceberg.util.PartitionUtil;
 import org.apache.spark.rdd.InputFileBlockHolder;
 import org.apache.spark.sql.catalyst.InternalRow;
-import org.apache.spark.sql.catalyst.expressions.GenericInternalRow;
-import org.apache.spark.sql.types.Decimal;
-import org.apache.spark.unsafe.types.UTF8String;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -80,6 +76,7 @@ abstract class BaseReader<T, TaskT extends ScanTask> implements Closeable {
   private final ScanTaskGroup<TaskT> taskGroup;
   private final Iterator<TaskT> tasks;
   private final DeleteCounter counter;
+  private final boolean cacheDeleteFilesOnExecutors;
 
   private Map<String, InputFile> lazyInputFiles;
   private CloseableIterator<T> currentIterator;
@@ -91,7 +88,8 @@ abstract class BaseReader<T, TaskT extends ScanTask> implements Closeable {
       ScanTaskGroup<TaskT> taskGroup,
       Schema tableSchema,
       Schema expectedSchema,
-      boolean caseSensitive) {
+      boolean caseSensitive,
+      boolean cacheDeleteFilesOnExecutors) {
     this.table = table;
     this.taskGroup = taskGroup;
     this.tasks = taskGroup.tasks().iterator();
@@ -103,6 +101,7 @@ abstract class BaseReader<T, TaskT extends ScanTask> implements Closeable {
     this.nameMapping =
         nameMappingString != null ? NameMappingParser.fromJson(nameMappingString) : null;
     this.counter = new DeleteCounter();
+    this.cacheDeleteFilesOnExecutors = cacheDeleteFilesOnExecutors;
   }
 
   protected abstract CloseableIterator<T> open(TaskT task);
@@ -115,6 +114,10 @@ abstract class BaseReader<T, TaskT extends ScanTask> implements Closeable {
 
   protected boolean caseSensitive() {
     return caseSensitive;
+  }
+
+  protected boolean cacheDeleteFilesOnExecutors() {
+    return cacheDeleteFilesOnExecutors;
   }
 
   protected NameMapping nameMapping() {
@@ -148,7 +151,7 @@ abstract class BaseReader<T, TaskT extends ScanTask> implements Closeable {
       if (currentTask != null && !currentTask.isDataTask()) {
         String filePaths =
             referencedFiles(currentTask)
-                .map(file -> file.path().toString())
+                .map(ContentFile::location)
                 .collect(Collectors.joining(", "));
         LOG.error("Error reading file(s): {}", filePaths, e);
       }
@@ -194,72 +197,28 @@ abstract class BaseReader<T, TaskT extends ScanTask> implements Closeable {
   }
 
   private EncryptedInputFile toEncryptedInputFile(ContentFile<?> file) {
-    InputFile inputFile = table.io().newInputFile(file.path().toString());
+    InputFile inputFile = table.io().newInputFile(file.location());
     return EncryptedFiles.encryptedInput(inputFile, file.keyMetadata());
   }
 
   protected Map<Integer, ?> constantsMap(ContentScanTask<?> task, Schema readSchema) {
     if (readSchema.findField(MetadataColumns.PARTITION_COLUMN_ID) != null) {
       StructType partitionType = Partitioning.partitionType(table);
-      return PartitionUtil.constantsMap(task, partitionType, BaseReader::convertConstant);
+      return PartitionUtil.constantsMap(task, partitionType, SparkUtil::internalToSpark);
     } else {
-      return PartitionUtil.constantsMap(task, BaseReader::convertConstant);
+      return PartitionUtil.constantsMap(task, SparkUtil::internalToSpark);
     }
-  }
-
-  protected static Object convertConstant(Type type, Object value) {
-    if (value == null) {
-      return null;
-    }
-
-    switch (type.typeId()) {
-      case DECIMAL:
-        return Decimal.apply((BigDecimal) value);
-      case STRING:
-        if (value instanceof Utf8) {
-          Utf8 utf8 = (Utf8) value;
-          return UTF8String.fromBytes(utf8.getBytes(), 0, utf8.getByteLength());
-        }
-        return UTF8String.fromString(value.toString());
-      case FIXED:
-        if (value instanceof byte[]) {
-          return value;
-        } else if (value instanceof GenericData.Fixed) {
-          return ((GenericData.Fixed) value).bytes();
-        }
-        return ByteBuffers.toByteArray((ByteBuffer) value);
-      case BINARY:
-        return ByteBuffers.toByteArray((ByteBuffer) value);
-      case STRUCT:
-        StructType structType = (StructType) type;
-
-        if (structType.fields().isEmpty()) {
-          return new GenericInternalRow();
-        }
-
-        List<NestedField> fields = structType.fields();
-        Object[] values = new Object[fields.size()];
-        StructLike struct = (StructLike) value;
-
-        for (int index = 0; index < fields.size(); index++) {
-          NestedField field = fields.get(index);
-          Type fieldType = field.type();
-          values[index] =
-              convertConstant(fieldType, struct.get(index, fieldType.typeId().javaClass()));
-        }
-
-        return new GenericInternalRow(values);
-      default:
-    }
-    return value;
   }
 
   protected class SparkDeleteFilter extends DeleteFilter<InternalRow> {
     private final InternalRowWrapper asStructLike;
 
-    SparkDeleteFilter(String filePath, List<DeleteFile> deletes, DeleteCounter counter) {
-      super(filePath, deletes, tableSchema, expectedSchema, counter);
-      this.asStructLike = new InternalRowWrapper(SparkSchemaUtil.convert(requiredSchema()));
+    SparkDeleteFilter(
+        String filePath, List<DeleteFile> deletes, DeleteCounter counter, boolean needRowPosCol) {
+      super(filePath, deletes, tableSchema, expectedSchema, counter, needRowPosCol);
+      this.asStructLike =
+          new InternalRowWrapper(
+              SparkSchemaUtil.convert(requiredSchema()), requiredSchema().asStruct());
     }
 
     @Override
@@ -277,6 +236,33 @@ abstract class BaseReader<T, TaskT extends ScanTask> implements Closeable {
       if (!row.getBoolean(columnIsDeletedPosition())) {
         row.setBoolean(columnIsDeletedPosition(), true);
         counter().increment();
+      }
+    }
+
+    @Override
+    protected DeleteLoader newDeleteLoader() {
+      if (cacheDeleteFilesOnExecutors) {
+        return new CachingDeleteLoader(this::loadInputFile);
+      }
+      return new BaseDeleteLoader(this::loadInputFile);
+    }
+
+    private class CachingDeleteLoader extends BaseDeleteLoader {
+      private final SparkExecutorCache cache;
+
+      CachingDeleteLoader(Function<DeleteFile, InputFile> loadInputFile) {
+        super(loadInputFile);
+        this.cache = SparkExecutorCache.getOrCreate();
+      }
+
+      @Override
+      protected boolean canCache(long size) {
+        return cache != null && size < cache.maxEntrySize();
+      }
+
+      @Override
+      protected <V> V getOrLoad(String key, Supplier<V> valueSupplier, long valueSize) {
+        return cache.getOrLoad(table().name(), key, valueSupplier, valueSize);
       }
     }
   }

@@ -45,6 +45,7 @@ import org.slf4j.LoggerFactory;
  */
 public class CachingCatalog implements Catalog {
   private static final Logger LOG = LoggerFactory.getLogger(CachingCatalog.class);
+  private static final MetadataTableType[] METADATA_TABLE_TYPE_VALUES = MetadataTableType.values();
 
   public static Catalog wrap(Catalog catalog) {
     return wrap(catalog, CatalogProperties.CACHE_EXPIRATION_INTERVAL_MS_OFF);
@@ -143,14 +144,16 @@ public class CachingCatalog implements Catalog {
       return cached;
     }
 
-    if (MetadataTableUtils.hasMetadataTableName(canonicalized)) {
+    Table table = tableCache.get(canonicalized, catalog::loadTable);
+
+    if (table instanceof BaseMetadataTable) {
+      // Cache underlying table
       TableIdentifier originTableIdentifier =
           TableIdentifier.of(canonicalized.namespace().levels());
       Table originTable = tableCache.get(originTableIdentifier, catalog::loadTable);
 
-      // share TableOperations instance of origin table for all metadata tables, so that metadata
-      // table instances are
-      // also refreshed as well when origin table instance is refreshed.
+      // Share TableOperations instance of origin table for all metadata tables, so that metadata
+      // table instances are refreshed as well when origin table instance is refreshed.
       if (originTable instanceof HasTableOperations) {
         TableOperations ops = ((HasTableOperations) originTable).operations();
         MetadataTableType type = MetadataTableType.from(canonicalized.name());
@@ -163,7 +166,7 @@ public class CachingCatalog implements Catalog {
       }
     }
 
-    return tableCache.get(canonicalized, catalog::loadTable);
+    return table;
   }
 
   @Override
@@ -197,7 +200,7 @@ public class CachingCatalog implements Catalog {
   private Iterable<TableIdentifier> metadataTableIdentifiers(TableIdentifier ident) {
     ImmutableList.Builder<TableIdentifier> builder = ImmutableList.builder();
 
-    for (MetadataTableType type : MetadataTableType.values()) {
+    for (MetadataTableType type : METADATA_TABLE_TYPE_VALUES) {
       // metadata table resolution is case insensitive right now
       builder.add(TableIdentifier.parse(ident + "." + type.name()));
       builder.add(TableIdentifier.parse(ident + "." + type.name().toLowerCase(Locale.ROOT)));

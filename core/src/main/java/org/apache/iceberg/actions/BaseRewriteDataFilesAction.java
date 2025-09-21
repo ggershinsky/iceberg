@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 import org.apache.iceberg.CombinedScanTask;
+import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.PartitionSpec;
@@ -31,6 +32,7 @@ import org.apache.iceberg.RewriteFiles;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
 import org.apache.iceberg.encryption.EncryptionManager;
+import org.apache.iceberg.exceptions.CleanableFailure;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.Expressions;
@@ -308,12 +310,15 @@ public abstract class BaseRewriteDataFilesAction<ThisT>
       LOG.warn("Commit state unknown, cannot clean up files that may have been committed", e);
       throw e;
     } catch (Exception e) {
-      LOG.warn("Failed to commit rewrite, cleaning up rewritten files", e);
-      Tasks.foreach(Iterables.transform(addedDataFiles, f -> f.path().toString()))
-          .noRetry()
-          .suppressFailureWhenFinished()
-          .onFailure((location, exc) -> LOG.warn("Failed to delete: {}", location, exc))
-          .run(fileIO::deleteFile);
+      if (e instanceof CleanableFailure) {
+        LOG.warn("Failed to commit rewrite, cleaning up rewritten files", e);
+        Tasks.foreach(Iterables.transform(addedDataFiles, ContentFile::location))
+            .noRetry()
+            .suppressFailureWhenFinished()
+            .onFailure((location, exc) -> LOG.warn("Failed to delete: {}", location, exc))
+            .run(fileIO::deleteFile);
+      }
+
       throw e;
     }
   }

@@ -20,20 +20,30 @@ package org.apache.iceberg.expressions;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.nio.ByteBuffer;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.DateTimeUtil;
-import org.assertj.core.api.Assertions;
+import org.apache.iceberg.variants.Variant;
+import org.apache.iceberg.variants.VariantArray;
+import org.apache.iceberg.variants.VariantMetadata;
+import org.apache.iceberg.variants.VariantObject;
+import org.apache.iceberg.variants.VariantPrimitive;
+import org.apache.iceberg.variants.VariantTestUtil;
+import org.apache.iceberg.variants.VariantValue;
 import org.junit.jupiter.api.Test;
 
 public class TestExpressionUtil {
@@ -43,12 +53,18 @@ public class TestExpressionUtil {
           Types.NestedField.required(2, "val", Types.IntegerType.get()),
           Types.NestedField.required(3, "val2", Types.IntegerType.get()),
           Types.NestedField.required(4, "ts", Types.TimestampType.withoutZone()),
-          Types.NestedField.required(5, "date", Types.DateType.get()),
-          Types.NestedField.required(6, "time", Types.DateType.get()),
-          Types.NestedField.optional(7, "data", Types.StringType.get()),
-          Types.NestedField.optional(8, "measurement", Types.DoubleType.get()));
+          Types.NestedField.required(5, "tsns", Types.TimestampNanoType.withoutZone()),
+          Types.NestedField.required(6, "date", Types.DateType.get()),
+          Types.NestedField.required(7, "time", Types.DateType.get()),
+          Types.NestedField.optional(8, "data", Types.StringType.get()),
+          Types.NestedField.optional(9, "measurement", Types.DoubleType.get()),
+          Types.NestedField.optional(10, "test", Types.IntegerType.get()),
+          Types.NestedField.required(11, "var", Types.VariantType.get()));
 
   private static final Types.StructType STRUCT = SCHEMA.asStruct();
+
+  private static final Types.StructType FLOAT_TEST =
+      Types.StructType.of(Types.NestedField.optional(1, "test", Types.FloatType.get()));
 
   @Test
   public void testUnchangedUnaryPredicates() {
@@ -59,6 +75,7 @@ public class TestExpressionUtil {
             Expressions.isNaN("test"),
             Expressions.notNaN("test"))) {
       assertEquals(unary, ExpressionUtil.sanitize(unary));
+      assertEquals(unary, ExpressionUtil.sanitize(FLOAT_TEST, unary, true));
     }
   }
 
@@ -68,7 +85,15 @@ public class TestExpressionUtil {
         Expressions.in("test", "(2-digit-int)", "(3-digit-int)"),
         ExpressionUtil.sanitize(Expressions.in("test", 34, 345)));
 
+    assertEquals(
+        Expressions.in("test", "(2-digit-int)", "(3-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.in("test", 34, 345), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.in("test", 34, 345)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test IN ((2-digit-int), (3-digit-int))");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.in("test", 34, 345), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test IN ((2-digit-int), (3-digit-int))");
   }
@@ -101,7 +126,7 @@ public class TestExpressionUtil {
 
   @Test
   public void zeroAndNegativeNumberHandling() {
-    Assertions.assertThat(
+    assertThat(
             ExpressionUtil.toSanitizedString(
                 Expressions.in(
                     "test",
@@ -124,6 +149,10 @@ public class TestExpressionUtil {
         ExpressionUtil.sanitize(Expressions.notIn("test", 34, 345)));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.notIn("test", 34, 345)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test NOT IN ((2-digit-int), (3-digit-int))");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.notIn("test", 34, 345), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test NOT IN ((2-digit-int), (3-digit-int))");
   }
@@ -161,7 +190,15 @@ public class TestExpressionUtil {
         Expressions.lessThan("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.lessThan("test", 34)));
 
+    assertEquals(
+        Expressions.lessThan("test", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.lessThan("test", 34), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.lessThan("test", 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test < (2-digit-int)");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.lessThan("test", 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test < (2-digit-int)");
   }
@@ -172,7 +209,16 @@ public class TestExpressionUtil {
         Expressions.lessThanOrEqual("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.lessThanOrEqual("test", 34)));
 
+    assertEquals(
+        Expressions.lessThanOrEqual("test", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.lessThanOrEqual("test", 34), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.lessThanOrEqual("test", 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test <= (2-digit-int)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(STRUCT, Expressions.lessThanOrEqual("test", 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test <= (2-digit-int)");
   }
@@ -183,7 +229,15 @@ public class TestExpressionUtil {
         Expressions.greaterThan("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.greaterThan("test", 34)));
 
+    assertEquals(
+        Expressions.greaterThan("test", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.greaterThan("test", 34), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.greaterThan("test", 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test > (2-digit-int)");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.greaterThan("test", 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test > (2-digit-int)");
   }
@@ -194,7 +248,17 @@ public class TestExpressionUtil {
         Expressions.greaterThanOrEqual("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.greaterThanOrEqual("test", 34)));
 
+    assertEquals(
+        Expressions.greaterThanOrEqual("test", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.greaterThanOrEqual("test", 34), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.greaterThanOrEqual("test", 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test >= (2-digit-int)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(
+                STRUCT, Expressions.greaterThanOrEqual("test", 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test >= (2-digit-int)");
   }
@@ -205,7 +269,15 @@ public class TestExpressionUtil {
         Expressions.equal("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.equal("test", 34)));
 
+    assertEquals(
+        Expressions.equal("test", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.equal("test", 34), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test = (2-digit-int)");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.equal("test", 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test = (2-digit-int)");
   }
@@ -216,7 +288,15 @@ public class TestExpressionUtil {
         Expressions.notEqual("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.notEqual("test", 34)));
 
+    assertEquals(
+        Expressions.notEqual("test", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.notEqual("test", 34), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.notEqual("test", 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test != (2-digit-int)");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.notEqual("test", 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test != (2-digit-int)");
   }
@@ -227,9 +307,18 @@ public class TestExpressionUtil {
         Expressions.startsWith("test", "(hash-34d05fb7)"),
         ExpressionUtil.sanitize(Expressions.startsWith("test", "aaa")));
 
+    assertEquals(
+        Expressions.startsWith("data", "(hash-34d05fb7)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.startsWith("data", "aaa"), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.startsWith("test", "aaa")))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test STARTS WITH (hash-34d05fb7)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(STRUCT, Expressions.startsWith("data", "aaa"), true))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("data STARTS WITH (hash-34d05fb7)");
   }
 
   @Test
@@ -238,9 +327,19 @@ public class TestExpressionUtil {
         Expressions.notStartsWith("test", "(hash-34d05fb7)"),
         ExpressionUtil.sanitize(Expressions.notStartsWith("test", "aaa")));
 
+    assertEquals(
+        Expressions.notStartsWith("data", "(hash-34d05fb7)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.notStartsWith("data", "aaa"), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.notStartsWith("test", "aaa")))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test NOT STARTS WITH (hash-34d05fb7)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(
+                STRUCT, Expressions.notStartsWith("data", "aaa"), true))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("data NOT STARTS WITH (hash-34d05fb7)");
   }
 
   @Test
@@ -249,9 +348,20 @@ public class TestExpressionUtil {
         Expressions.equal(Expressions.truncate("test", 2), "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.equal(Expressions.truncate("test", 2), 34)));
 
+    assertEquals(
+        Expressions.equal(Expressions.truncate("test", 2), "(2-digit-int)"),
+        ExpressionUtil.sanitize(
+            STRUCT, Expressions.equal(Expressions.truncate("test", 2), 34), true));
+
     assertThat(
             ExpressionUtil.toSanitizedString(
                 Expressions.equal(Expressions.truncate("test", 2), 34)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("truncate[2](test) = (2-digit-int)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(
+                STRUCT, Expressions.equal(Expressions.truncate("test", 2), 34), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("truncate[2](test) = (2-digit-int)");
   }
@@ -262,9 +372,17 @@ public class TestExpressionUtil {
         Expressions.equal("test", "(2-digit-int)"),
         ExpressionUtil.sanitize(Expressions.equal("test", 34L)));
 
+    assertEquals(
+        Expressions.equal("id", "(2-digit-int)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.equal("id", 34L), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", 34L)))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test = (2-digit-int)");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.equal("id", 34L), true))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("id = (2-digit-int)");
   }
 
   @Test
@@ -273,7 +391,15 @@ public class TestExpressionUtil {
         Expressions.equal("test", "(2-digit-float)"),
         ExpressionUtil.sanitize(Expressions.equal("test", 34.12F)));
 
+    assertEquals(
+        Expressions.equal("test", "(2-digit-float)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.equal("test", 34.12F), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", 34.12F)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("test = (2-digit-float)");
+
+    assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.equal("test", 34.12F), true))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test = (2-digit-float)");
   }
@@ -284,9 +410,17 @@ public class TestExpressionUtil {
         Expressions.equal("test", "(2-digit-float)"),
         ExpressionUtil.sanitize(Expressions.equal("test", 34.12D)));
 
+    assertEquals(
+        Expressions.equal("measurement", "(2-digit-float)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.equal("measurement", 34.12D), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", 34.12D)))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test = (2-digit-float)");
+
+    assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("measurement", 34.12D)))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("measurement = (2-digit-float)");
   }
 
   @Test
@@ -295,9 +429,22 @@ public class TestExpressionUtil {
         Expressions.equal("test", "(date)"),
         ExpressionUtil.sanitize(Expressions.equal("test", "2022-04-29")));
 
+    assertEquals(
+        Expressions.equal("date", "(date)"),
+        ExpressionUtil.sanitize(Expressions.equal("date", "2022-04-29").bind(STRUCT, true)));
+
+    assertEquals(
+        Expressions.equal("date", "(date)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.equal("date", "2022-04-29"), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", "2022-04-29")))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test = (date)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(STRUCT, Expressions.equal("date", "2022-04-29"), true))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("date = (date)");
   }
 
   @Test
@@ -309,9 +456,18 @@ public class TestExpressionUtil {
         Expressions.equal("test", "(time)"),
         ExpressionUtil.sanitize(Expressions.equal("test", currentTime)));
 
+    assertEquals(
+        Expressions.equal("time", "(time)"),
+        ExpressionUtil.sanitize(STRUCT, Expressions.equal("time", currentTime), true));
+
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", currentTime)))
         .as("Sanitized string should be identical except for descriptive literal")
         .isEqualTo("test = (time)");
+
+    assertThat(
+            ExpressionUtil.toSanitizedString(STRUCT, Expressions.equal("time", currentTime), true))
+        .as("Sanitized string should be identical except for descriptive literal")
+        .isEqualTo("time = (time)");
   }
 
   @Test
@@ -321,14 +477,24 @@ public class TestExpressionUtil {
             "2022-04-29T23:49:51",
             "2022-04-29T23:49:51.123456",
             "2022-04-29T23:49:51-07:00",
-            "2022-04-29T23:49:51.123456+01:00")) {
+            "2022-04-29T23:49:51.123456+01:00",
+            "2022-04-29T23:49:51.123456789",
+            "2022-04-29T23:49:51.123456789+01:00")) {
       assertEquals(
           Expressions.equal("test", "(timestamp)"),
           ExpressionUtil.sanitize(Expressions.equal("test", timestamp)));
 
+      assertEquals(
+          Expressions.equal("ts", "(timestamp)"),
+          ExpressionUtil.sanitize(STRUCT, Expressions.equal("ts", timestamp), true));
+
       assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", timestamp)))
           .as("Sanitized string should be identical except for descriptive literal")
           .isEqualTo("test = (timestamp)");
+
+      assertThat(ExpressionUtil.toSanitizedString(STRUCT, Expressions.equal("ts", timestamp), true))
+          .as("Sanitized string should be identical except for descriptive literal")
+          .isEqualTo("ts = (timestamp)");
     }
   }
 
@@ -349,6 +515,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(nowLocal).to(Types.TimestampType.withoutZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-about-now)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(nowLocal).to(Types.TimestampNanoType.withoutZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", nowLocal)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -375,6 +548,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(ninetyMinutesAgoLocal).to(Types.TimestampType.withoutZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-1-hours-ago)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(ninetyMinutesAgoLocal).to(Types.TimestampNanoType.withoutZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", ninetyMinutesAgoLocal)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -401,6 +581,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(lastWeekLocal).to(Types.TimestampType.withoutZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-7-days-ago)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(lastWeekLocal).to(Types.TimestampNanoType.withoutZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", lastWeekLocal)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -427,6 +614,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(ninetyMinutesFromNowLocal).to(Types.TimestampType.withoutZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-1-hours-from-now)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(ninetyMinutesFromNowLocal).to(Types.TimestampNanoType.withoutZone()))));
 
     assertThat(
             ExpressionUtil.toSanitizedString(Expressions.equal("test", ninetyMinutesFromNowLocal)))
@@ -450,6 +644,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(nowUtc).to(Types.TimestampType.withZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-about-now)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(nowUtc).to(Types.TimestampNanoType.withZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", nowUtc)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -471,6 +672,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(ninetyMinutesAgoUtc).to(Types.TimestampType.withZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-1-hours-ago)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(ninetyMinutesAgoUtc).to(Types.TimestampNanoType.withZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", ninetyMinutesAgoUtc)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -492,6 +700,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(lastWeekUtc).to(Types.TimestampType.withZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-7-days-ago)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(lastWeekUtc).to(Types.TimestampNanoType.withZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", lastWeekUtc)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -513,6 +728,13 @@ public class TestExpressionUtil {
                 Expression.Operation.EQ,
                 "test",
                 Literal.of(ninetyMinutesFromNowUtc).to(Types.TimestampType.withZone()))));
+    assertEquals(
+        Expressions.equal("test", "(timestamp-1-hours-from-now)"),
+        ExpressionUtil.sanitize(
+            Expressions.predicate(
+                Expression.Operation.EQ,
+                "test",
+                Literal.of(ninetyMinutesFromNowUtc).to(Types.TimestampNanoType.withZone()))));
 
     assertThat(ExpressionUtil.toSanitizedString(Expressions.equal("test", ninetyMinutesFromNowUtc)))
         .as("Sanitized string should be identical except for descriptive literal")
@@ -586,7 +808,7 @@ public class TestExpressionUtil {
             "2022-04-29T23:70:51-07:00",
             "2022-04-29T23:49:51.123456+100:00")) {
       String sanitizedFilter = ExpressionUtil.toSanitizedString(Expressions.equal("test", filter));
-      Assertions.assertThat(filterPattern.matcher(sanitizedFilter)).matches();
+      assertThat(filterPattern.matcher(sanitizedFilter)).matches();
     }
   }
 
@@ -840,8 +1062,251 @@ public class TestExpressionUtil {
         .isFalse();
   }
 
+  @Test
+  public void testSanitizeVariantArray() {
+    Expression bound =
+        Binder.bind(
+            STRUCT,
+            Expressions.equal(
+                "var", Variant.of(VariantMetadata.empty(), createArrayWithNestedTypes())));
+    assertEquals(
+        Expressions.equal(
+            "var",
+            "[(hash-2024a117), {(hash-a): (2-digit-INT8)}, [(2-digit-INT8), (timestamp), (date)]]"),
+        ExpressionUtil.sanitize(bound));
+  }
+
+  @Test
+  public void testSanitizeVariantPrimitive() {
+    Expression int8Bound =
+        Binder.bind(
+            STRUCT,
+            Expressions.equal(
+                "var",
+                Variant.of(
+                    VariantMetadata.empty(),
+                    VariantTestUtil.createSerializedPrimitive(3, new byte[] {(byte) 32}))));
+    assertEquals(Expressions.equal("var", "(2-digit-INT8)"), ExpressionUtil.sanitize(int8Bound));
+    Expression int16Bound =
+        Binder.bind(
+            STRUCT,
+            Expressions.equal(
+                "var",
+                Variant.of(
+                    VariantMetadata.empty(),
+                    VariantTestUtil.createSerializedPrimitive(4, new byte[] {(byte) 0xD2, 0x04}))));
+    assertEquals(Expressions.equal("var", "(4-digit-INT16)"), ExpressionUtil.sanitize(int16Bound));
+    Expression doubleBound =
+        Binder.bind(
+            STRUCT,
+            Expressions.equal(
+                "var",
+                Variant.of(
+                    VariantMetadata.empty(),
+                    VariantTestUtil.createSerializedPrimitive(
+                        7,
+                        new byte[] {
+                          (byte) 0xB1, 0x1C, 0x6C, (byte) 0xB1, (byte) 0xF4, 0x10, 0x22, 0x11
+                        }))));
+    assertEquals(
+        Expressions.equal("var", "(-224-digit-DOUBLE)"), ExpressionUtil.sanitize(doubleBound));
+
+    Expression timestamp =
+        Binder.bind(
+            STRUCT,
+            Expressions.equal(
+                "var",
+                Variant.of(
+                    VariantMetadata.empty(),
+                    VariantTestUtil.createSerializedPrimitive(
+                        12,
+                        new byte[] {
+                          0x18, (byte) 0xD3, (byte) 0xB1, (byte) 0xD6, 0x07, 0x57, 0x05, 0x00
+                        }))));
+    assertEquals(Expressions.equal("var", "(timestamp)"), ExpressionUtil.sanitize(timestamp));
+  }
+
+  @Test
+  public void testSanitizeVariantObject() {
+    Map<String, VariantValue> data = new HashMap<String, VariantValue>();
+    data.put("event_id_8", VariantTestUtil.createSerializedPrimitive(3, new byte[] {(byte) 32}));
+    data.put(
+        "event_id_16",
+        VariantTestUtil.createSerializedPrimitive(4, new byte[] {(byte) 0xD2, 0x04}));
+    data.put(
+        "event_id_32",
+        VariantTestUtil.createSerializedPrimitive(
+            5, new byte[] {(byte) 0xD2, 0x02, (byte) 0x96, 0x49}));
+    data.put(
+        "event_id_64",
+        VariantTestUtil.createSerializedPrimitive(
+            6, new byte[] {(byte) 0xB1, 0x1C, 0x6C, (byte) 0xB1, (byte) 0xF4, 0x10, 0x22, 0x11}));
+    data.put("event_name", VariantTestUtil.createString("test"));
+    data.put(
+        "event_float",
+        VariantTestUtil.createSerializedPrimitive(
+            14, new byte[] {(byte) 0xD2, 0x02, (byte) 0x96, 0x49}));
+    data.put(
+        "event_double",
+        VariantTestUtil.createSerializedPrimitive(
+            7, new byte[] {(byte) 0xB1, 0x1C, 0x6C, (byte) 0xB1, (byte) 0xF4, 0x10, 0x22, 0x11}));
+    byte[] empty = new byte[0];
+    data.put("event_bool_t", VariantTestUtil.createSerializedPrimitive(1, empty));
+    data.put("event_bool_f", VariantTestUtil.createSerializedPrimitive(2, empty));
+    data.put(
+        "event_id_dec4",
+        VariantTestUtil.createSerializedPrimitive(
+            8, new byte[] {0x04, (byte) 0xD2, 0x02, (byte) 0x96, 0x49}));
+    data.put(
+        "event_id_dec8", // scale=9
+        VariantTestUtil.createSerializedPrimitive(
+            9,
+            new byte[] {
+              0x09, (byte) 0xB1, 0x1C, 0x6C, (byte) 0xB1, (byte) 0xF4, 0x10, 0x22, 0x11
+            }));
+    data.put(
+        "event_id_dec16", // scale=9
+        VariantTestUtil.createSerializedPrimitive(
+            10,
+            new byte[] {
+              0x09,
+              0x15,
+              0x71,
+              0x34,
+              (byte) 0xB0,
+              (byte) 0xB8,
+              (byte) 0x87,
+              0x10,
+              (byte) 0x89,
+              0x00,
+              0x00,
+              0x00,
+              0x00,
+              0x00,
+              0x00,
+              0x00,
+              0x00
+            }));
+    data.put(
+        "event_date",
+        VariantTestUtil.createSerializedPrimitive(11, new byte[] {(byte) 0xF4, 0x43, 0x00, 0x00}));
+    data.put("event_timestamp_tz", createTimestamp(12));
+    data.put("event_timestamp_ntz", createTimestamp(13));
+    data.put(
+        "event_time",
+        VariantTestUtil.createSerializedPrimitive(
+            17,
+            new byte[] {
+              (byte) 0x80,
+              (byte) 0xa8,
+              (byte) 0x4b,
+              (byte) 0xb7,
+              (byte) 0x02,
+              (byte) 0x00,
+              (byte) 0x00,
+              0x00
+            }));
+    data.put("event_timestamp_tz_nanos", createTimestampNanos(18));
+    data.put("event_timestamp_ntz_nanos", createTimestampNanos(19));
+    data.put(
+        "event_uuid",
+        VariantTestUtil.createSerializedPrimitive(
+            20,
+            new byte[] {
+              (byte) 0xf2,
+              0x4f,
+              (byte) 0x9b,
+              0x64,
+              (byte) 0x81,
+              (byte) 0xfa,
+              0x49,
+              (byte) 0xd1,
+              (byte) 0xb7,
+              0x4e,
+              (byte) 0x8c,
+              0x09,
+              (byte) 0xa6,
+              (byte) 0xe3,
+              0x1c,
+              0x56
+            }));
+    data.put(
+        "event_binary",
+        VariantTestUtil.createSerializedPrimitive(
+            15, new byte[] {0x05, 0x00, 0x00, 0x00, 'a', 'b', 'c', 'd', 'e'}));
+
+    data.put("event_array", createArrayWithNestedTypes());
+    Variant value = VariantTestUtil.variant(data);
+    Expression bound = Binder.bind(STRUCT, Expressions.equal("var", value));
+    assertEquals(
+        Expressions.equal(
+            "var",
+            "{(hash-event_array): "
+                + "[(hash-2024a117), {(hash-event_array): (2-digit-INT8)}, [(2-digit-INT8), (timestamp), (date)]], (hash-event_binary): (hash-04584bd6), "
+                + "(hash-event_bool_f): (hash-3682a0b4), "
+                + "(hash-event_bool_t): (hash-451a5465), "
+                + "(hash-event_date): (date), "
+                + "(hash-event_double): (-224-digit-DOUBLE), "
+                + "(hash-event_float): (7-digit-FLOAT), "
+                + "(hash-event_id_16): (4-digit-INT16), "
+                + "(hash-event_id_32): (10-digit-INT32), "
+                + "(hash-event_id_64): (19-digit-INT64), "
+                + "(hash-event_id_8): (2-digit-INT8), "
+                + "(hash-event_id_dec16): (10-digit-DECIMAL16), "
+                + "(hash-event_id_dec4): (6-digit-DECIMAL4), "
+                + "(hash-event_id_dec8): (10-digit-DECIMAL8), "
+                + "(hash-event_name): (hash-79b17dd6), "
+                + "(hash-event_time): (time), "
+                + "(hash-event_timestamp_ntz): (timestamp), "
+                + "(hash-event_timestamp_ntz_nanos): (timestamp), "
+                + "(hash-event_timestamp_tz): (timestamp), "
+                + "(hash-event_timestamp_tz_nanos): (timestamp), "
+                + "(hash-event_uuid): (hash-54e07fa7)}"),
+        ExpressionUtil.sanitize(bound));
+  }
+
+  private static VariantPrimitive<?> createTimestampNanos(int primitiveHeader) {
+    return VariantTestUtil.createSerializedPrimitive(
+        primitiveHeader,
+        new byte[] {
+          0x15, (byte) 0x8f, (byte) 0x35, (byte) 0x77, (byte) 0x9e, (byte) 0xf6, (byte) 0xdb, 0x14
+        });
+  }
+
+  private static VariantPrimitive<?> createTimestamp(int primitiveHeader) {
+    return VariantTestUtil.createSerializedPrimitive(
+        primitiveHeader,
+        new byte[] {0x18, (byte) 0xD3, (byte) 0xB1, (byte) 0xD6, 0x07, 0x57, 0x05, 0x00});
+  }
+
+  private static VariantArray createArrayWithNestedTypes() {
+    ByteBuffer nestedArrayBuffer =
+        VariantTestUtil.createArray(
+            VariantTestUtil.createSerializedPrimitive(3, new byte[] {(byte) 32}),
+            VariantTestUtil.createSerializedPrimitive(
+                12,
+                new byte[] {0x18, (byte) 0xD3, (byte) 0xB1, (byte) 0xD6, 0x07, 0x57, 0x05, 0x00}),
+            VariantTestUtil.createSerializedPrimitive(
+                11, new byte[] {(byte) 0xF4, 0x43, 0x00, 0x00}));
+    VariantArray nestedArray =
+        (VariantArray) VariantValue.from(VariantMetadata.empty(), nestedArrayBuffer);
+
+    Map<String, VariantValue> innerData =
+        ImmutableMap.of("a", VariantTestUtil.createSerializedPrimitive(3, new byte[] {(byte) 40}));
+    ByteBuffer meta = VariantTestUtil.createMetadata(innerData.keySet(), true);
+    ByteBuffer nestedBBObject = VariantTestUtil.createObject(meta, innerData);
+
+    VariantMetadata metadata = VariantMetadata.from(meta);
+    VariantObject nestedObject = (VariantObject) VariantValue.from(metadata, nestedBBObject);
+
+    ByteBuffer variantBB =
+        VariantTestUtil.createArray(
+            VariantTestUtil.createString("iceberg"), nestedObject, nestedArray);
+    return (VariantArray) VariantValue.from(metadata, variantBB);
+  }
+
   private void assertEquals(Expression expected, Expression actual) {
-    Assertions.assertThat(expected).isInstanceOf(UnboundPredicate.class);
+    assertThat(expected).isInstanceOf(UnboundPredicate.class);
     assertEquals((UnboundPredicate<?>) expected, (UnboundPredicate<?>) actual);
   }
 
@@ -852,7 +1317,7 @@ public class TestExpressionUtil {
   }
 
   private void assertEquals(UnboundTerm<?> expected, UnboundTerm<?> actual) {
-    Assertions.assertThat(expected)
+    assertThat(expected)
         .as("Unknown expected term: " + expected)
         .isOfAnyClassIn(NamedReference.class, UnboundTransform.class);
 

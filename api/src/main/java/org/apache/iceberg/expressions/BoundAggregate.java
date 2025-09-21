@@ -57,7 +57,7 @@ public class BoundAggregate<T, C> extends Aggregate<BoundTerm<T>> implements Bou
   }
 
   public Type type() {
-    if (op() == Operation.COUNT || op() == Operation.COUNT_STAR) {
+    if (op() == Operation.COUNT || op() == Operation.COUNT_STAR || op() == Operation.COUNT_NULL) {
       return Types.LongType.get();
     } else {
       return term().type();
@@ -78,6 +78,8 @@ public class BoundAggregate<T, C> extends Aggregate<BoundTerm<T>> implements Bou
         return "count(*)";
       case COUNT:
         return "count(" + ExpressionUtil.describe(term()) + ")";
+      case COUNT_NULL:
+        return "count_if(" + ExpressionUtil.describe(term()) + " is null)";
       case MAX:
         return "max(" + ExpressionUtil.describe(term()) + ")";
       case MIN:
@@ -85,6 +87,13 @@ public class BoundAggregate<T, C> extends Aggregate<BoundTerm<T>> implements Bou
       default:
         throw new UnsupportedOperationException("Unsupported aggregate type: " + op());
     }
+  }
+
+  <V> boolean safeContainsKey(Map<Integer, V> map, int key) {
+    if (map == null) {
+      return false;
+    }
+    return map.containsKey(key);
   }
 
   <V> V safeGet(Map<Integer, V> map, int key) {

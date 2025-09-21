@@ -19,6 +19,9 @@
 package org.apache.iceberg.orc;
 
 import static org.apache.iceberg.types.Types.NestedField.required;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.offset;
 
 import java.io.File;
 import java.lang.reflect.Field;
@@ -41,11 +44,8 @@ import org.apache.orc.TypeDescription;
 import org.apache.orc.impl.OrcIndex;
 import org.apache.orc.impl.RecordReaderImpl;
 import org.apache.orc.impl.WriterImpl;
-import org.assertj.core.api.Assertions;
-import org.junit.Assert;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 public class TestBloomFilter {
   private static final Schema DATA_SCHEMA =
@@ -54,12 +54,11 @@ public class TestBloomFilter {
           required(101, "name", Types.StringType.get()),
           required(102, "price", Types.DoubleType.get()));
 
-  @Rule public TemporaryFolder temp = new TemporaryFolder();
+  @TempDir private File testFile;
 
   @Test
   public void testWriteOption() throws Exception {
-    File testFile = temp.newFile();
-    Assert.assertTrue("Delete should succeed", testFile.delete());
+    assertThat(testFile.delete()).as("Delete should succeed").isTrue();
 
     OutputFile outFile = Files.localOutput(testFile);
     try (FileAppender<Record> writer =
@@ -84,9 +83,9 @@ public class TestBloomFilter {
       double bloomFilterFpp = (double) bloomFilterFppField.get(orcWriter);
 
       // Validate whether the bloom filters are set in ORC SDK or not
-      Assert.assertTrue(bloomFilterColumns[1]);
-      Assert.assertTrue(bloomFilterColumns[2]);
-      Assert.assertEquals(0.04, bloomFilterFpp, 1e-15);
+      assertThat(bloomFilterColumns[1]).isTrue();
+      assertThat(bloomFilterColumns[2]).isTrue();
+      assertThat(bloomFilterFpp).isCloseTo(0.04, offset(1e-15));
 
       Record recordTemplate = GenericRecord.create(DATA_SCHEMA);
       Record record1 = recordTemplate.copy("id", 1L, "name", "foo", "price", 1.0);
@@ -108,7 +107,7 @@ public class TestBloomFilter {
 
     try (Reader reader =
         OrcFile.createReader(
-            new Path(outFile.location()), new OrcFile.ReaderOptions(new Configuration())); ) {
+            new Path(outFile.location()), new OrcFile.ReaderOptions(new Configuration()))) {
       boolean[] readCols = new boolean[] {false, true, true, false};
       RecordReaderImpl rows = (RecordReaderImpl) reader.rows();
       OrcIndex indices = rows.readRowIndex(0, null, readCols);
@@ -126,16 +125,15 @@ public class TestBloomFilter {
                   footer.getColumns(1));
 
       // Validate whether the bloom filters are written ORC files or not
-      Assertions.assertThat(bloomFilterString).contains("Bloom filters for column");
+      assertThat(bloomFilterString).contains("Bloom filters for column");
     }
   }
 
   @Test
   public void testInvalidFppOption() throws Exception {
-    File testFile = temp.newFile();
-    Assert.assertTrue("Delete should succeed", testFile.delete());
+    assertThat(testFile.delete()).as("Delete should succeed").isTrue();
 
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 ORC.write(Files.localOutput(testFile))
                     .createWriterFunc(GenericOrcWriter::buildWriter)

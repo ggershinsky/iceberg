@@ -20,14 +20,15 @@ package org.apache.iceberg;
 
 import static org.apache.iceberg.types.Types.NestedField.optional;
 import static org.apache.iceberg.types.Types.NestedField.required;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
 import java.util.Locale;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.JsonUtil;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestSingleValueParser {
 
@@ -45,6 +46,8 @@ public class TestSingleValueParser {
           {Types.TimeType.get(), "\"10:15:30\""},
           {Types.TimestampType.withoutZone(), "\"2007-12-03T10:15:30\""},
           {Types.TimestampType.withZone(), "\"2007-12-03T10:15:30+00:00\""},
+          {Types.TimestampNanoType.withoutZone(), "\"2007-12-03T10:15:30.123456789\""},
+          {Types.TimestampNanoType.withZone(), "\"2007-12-03T10:15:30.123456789+00:00\""},
           {Types.StringType.get(), "\"foo\""},
           {Types.UUIDType.get(), "\"eb26bdb1-a1d8-4aa6-990e-da940875492c\""},
           {Types.FixedType.ofLength(2), "\"111f\""},
@@ -114,22 +117,18 @@ public class TestSingleValueParser {
   public void testInvalidFixed() {
     Type expectedType = Types.FixedType.ofLength(2);
     String defaultJson = "\"111ff\"";
-    Exception exception =
-        Assert.assertThrows(
-            IllegalArgumentException.class,
-            () -> defaultValueParseAndUnParseRoundTrip(expectedType, defaultJson));
-    Assert.assertTrue(exception.getMessage().startsWith("Cannot parse default fixed[2] value"));
+    assertThatThrownBy(() -> defaultValueParseAndUnParseRoundTrip(expectedType, defaultJson))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("Cannot parse default fixed[2] value");
   }
 
   @Test
   public void testInvalidUUID() {
     Type expectedType = Types.UUIDType.get();
     String defaultJson = "\"eb26bdb1-a1d8-4aa6-990e-da940875492c-abcde\"";
-    Exception exception =
-        Assert.assertThrows(
-            IllegalArgumentException.class,
-            () -> defaultValueParseAndUnParseRoundTrip(expectedType, defaultJson));
-    Assert.assertTrue(exception.getMessage().startsWith("Cannot parse default as a uuid value"));
+    assertThatThrownBy(() -> defaultValueParseAndUnParseRoundTrip(expectedType, defaultJson))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("Cannot parse default as a uuid value");
   }
 
   @Test
@@ -137,36 +136,36 @@ public class TestSingleValueParser {
     Type expectedType =
         Types.MapType.ofOptional(1, 2, Types.IntegerType.get(), Types.StringType.get());
     String defaultJson = "{\"keys\": [1, 2, 3], \"values\": [\"foo\", \"bar\"]}";
-    Exception exception =
-        Assert.assertThrows(
-            IllegalArgumentException.class,
-            () -> defaultValueParseAndUnParseRoundTrip(expectedType, defaultJson));
-    Assert.assertTrue(
-        exception.getMessage().startsWith("Cannot parse default as a map<int, string> value"));
+    assertThatThrownBy(() -> defaultValueParseAndUnParseRoundTrip(expectedType, defaultJson))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("Cannot parse default as a map<int, string> value");
   }
 
   @Test
   public void testInvalidDecimal() {
     Type expectedType = Types.DecimalType.of(5, 2);
     String defaultJson = "123.456";
-    Exception exception =
-        Assert.assertThrows(
-            IllegalArgumentException.class,
-            () -> defaultValueParseAndUnParseRoundTrip(expectedType, defaultJson));
-    Assert.assertTrue(
-        exception.getMessage().startsWith("Cannot parse default as a decimal(5, 2) value"));
+    assertThatThrownBy(() -> defaultValueParseAndUnParseRoundTrip(expectedType, defaultJson))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("Cannot parse default as a decimal(5, 2) value");
   }
 
   @Test
   public void testInvalidTimestamptz() {
     Type expectedType = Types.TimestampType.withZone();
     String defaultJson = "\"2007-12-03T10:15:30+01:00\"";
-    Exception exception =
-        Assert.assertThrows(
-            IllegalArgumentException.class,
-            () -> defaultValueParseAndUnParseRoundTrip(expectedType, defaultJson));
-    Assert.assertTrue(
-        exception.getMessage().startsWith("Cannot parse default as a timestamptz value"));
+    assertThatThrownBy(() -> defaultValueParseAndUnParseRoundTrip(expectedType, defaultJson))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("Cannot parse default as a timestamptz value");
+  }
+
+  @Test
+  public void testInvalidTimestamptzNano() {
+    Type expectedType = Types.TimestampNanoType.withZone();
+    String defaultJson = "\"2007-12-03T10:15:30+01:00\"";
+    assertThatThrownBy(() -> defaultValueParseAndUnParseRoundTrip(expectedType, defaultJson))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageStartingWith("Cannot parse default as a timestamptz_ns value");
   }
 
   // serialize to json and deserialize back should return the same result
@@ -176,6 +175,6 @@ public class TestSingleValueParser {
   }
 
   private static void jsonStringEquals(String s1, String s2) throws IOException {
-    Assert.assertEquals(JsonUtil.mapper().readTree(s1), JsonUtil.mapper().readTree(s2));
+    assertThat(JsonUtil.mapper().readTree(s2)).isEqualTo(JsonUtil.mapper().readTree(s1));
   }
 }

@@ -32,12 +32,10 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.BulkDeletionFailureException;
-import org.apache.iceberg.io.FileIO;
+import org.apache.iceberg.io.DelegateFileIO;
 import org.apache.iceberg.io.FileInfo;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.io.OutputFile;
-import org.apache.iceberg.io.SupportsBulkOperations;
-import org.apache.iceberg.io.SupportsPrefixOperations;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Streams;
 import org.apache.iceberg.util.SerializableMap;
@@ -47,8 +45,7 @@ import org.apache.iceberg.util.ThreadPools;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class HadoopFileIO
-    implements FileIO, HadoopConfigurable, SupportsPrefixOperations, SupportsBulkOperations {
+public class HadoopFileIO implements HadoopConfigurable, DelegateFileIO {
 
   private static final Logger LOG = LoggerFactory.getLogger(HadoopFileIO.class);
   private static final String DELETE_FILE_PARALLELISM = "iceberg.hadoop.delete-file-parallelism";
@@ -57,7 +54,7 @@ public class HadoopFileIO
   private static final int DEFAULT_DELETE_CORE_MULTIPLE = 4;
   private static volatile ExecutorService executorService;
 
-  private SerializableSupplier<Configuration> hadoopConf;
+  private volatile SerializableSupplier<Configuration> hadoopConf;
   private SerializableMap<String, String> properties = SerializableMap.copyOf(ImmutableMap.of());
 
   /**
@@ -77,7 +74,7 @@ public class HadoopFileIO
   }
 
   public Configuration conf() {
-    return hadoopConf.get();
+    return getConf();
   }
 
   @Override
@@ -87,23 +84,23 @@ public class HadoopFileIO
 
   @Override
   public InputFile newInputFile(String path) {
-    return HadoopInputFile.fromLocation(path, hadoopConf.get());
+    return HadoopInputFile.fromLocation(path, getConf());
   }
 
   @Override
   public InputFile newInputFile(String path, long length) {
-    return HadoopInputFile.fromLocation(path, length, hadoopConf.get());
+    return HadoopInputFile.fromLocation(path, length, getConf());
   }
 
   @Override
   public OutputFile newOutputFile(String path) {
-    return HadoopOutputFile.fromPath(new Path(path), hadoopConf.get());
+    return HadoopOutputFile.fromPath(new Path(path), getConf());
   }
 
   @Override
   public void deleteFile(String path) {
     Path toDelete = new Path(path);
-    FileSystem fs = Util.getFs(toDelete, hadoopConf.get());
+    FileSystem fs = Util.getFs(toDelete, getConf());
     try {
       fs.delete(toDelete, false /* not recursive */);
     } catch (IOException e) {
@@ -123,6 +120,16 @@ public class HadoopFileIO
 
   @Override
   public Configuration getConf() {
+    // Create a default hadoopConf as it is required for the object to be valid.
+    // E.g. newInputFile would throw NPE with getConf() otherwise.
+    if (hadoopConf == null) {
+      synchronized (this) {
+        if (hadoopConf == null) {
+          this.hadoopConf = new SerializableConfiguration(new Configuration())::get;
+        }
+      }
+    }
+
     return hadoopConf.get();
   }
 
@@ -135,7 +142,7 @@ public class HadoopFileIO
   @Override
   public Iterable<FileInfo> listPrefix(String prefix) {
     Path prefixToList = new Path(prefix);
-    FileSystem fs = Util.getFs(prefixToList, hadoopConf.get());
+    FileSystem fs = Util.getFs(prefixToList, getConf());
 
     return () -> {
       try {
@@ -157,7 +164,7 @@ public class HadoopFileIO
   @Override
   public void deletePrefix(String prefix) {
     Path prefixToDelete = new Path(prefix);
-    FileSystem fs = Util.getFs(prefixToDelete, hadoopConf.get());
+    FileSystem fs = Util.getFs(prefixToDelete, getConf());
 
     try {
       fs.delete(prefixToDelete, true /* recursive */);
@@ -195,7 +202,8 @@ public class HadoopFileIO
     if (executorService == null) {
       synchronized (HadoopFileIO.class) {
         if (executorService == null) {
-          executorService = ThreadPools.newWorkerPool(DELETE_FILE_POOL_NAME, deleteThreads());
+          executorService =
+              ThreadPools.newExitingWorkerPool(DELETE_FILE_POOL_NAME, deleteThreads());
         }
       }
     }

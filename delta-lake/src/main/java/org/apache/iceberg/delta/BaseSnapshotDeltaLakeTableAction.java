@@ -26,13 +26,13 @@ import io.delta.standalone.actions.RemoveFile;
 import io.delta.standalone.exceptions.DeltaStandaloneException;
 import java.io.File;
 import java.net.URI;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
-import org.apache.commons.codec.DecoderException;
-import org.apache.commons.codec.net.URLCodec;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.AppendFiles;
 import org.apache.iceberg.DataFile;
@@ -251,7 +251,7 @@ class BaseSnapshotDeltaLakeTableAction implements SnapshotDeltaLakeTable {
         for (AddFile addFile : initDataFiles) {
           DataFile dataFile = buildDataFileFromAction(addFile, transaction.table());
           filesToAdd.add(dataFile);
-          migratedDataFilesBuilder.add(dataFile.path().toString());
+          migratedDataFilesBuilder.add(dataFile.location());
         }
 
         // AppendFiles case
@@ -308,21 +308,21 @@ class BaseSnapshotDeltaLakeTableAction implements SnapshotDeltaLakeTable {
         throw new ValidationException(
             "The action %s's is unsupported", action.getClass().getSimpleName());
       }
-      migratedDataFilesBuilder.add(dataFile.path().toString());
+      migratedDataFilesBuilder.add(dataFile.location());
     }
 
-    if (filesToAdd.size() > 0 && filesToRemove.size() > 0) {
+    if (!filesToAdd.isEmpty() && !filesToRemove.isEmpty()) {
       // OverwriteFiles case
       OverwriteFiles overwriteFiles = transaction.newOverwrite();
       filesToAdd.forEach(overwriteFiles::addFile);
       filesToRemove.forEach(overwriteFiles::deleteFile);
       overwriteFiles.commit();
-    } else if (filesToAdd.size() > 0) {
+    } else if (!filesToAdd.isEmpty()) {
       // AppendFiles case
       AppendFiles appendFiles = transaction.newAppend();
       filesToAdd.forEach(appendFiles::appendFile);
       appendFiles.commit();
-    } else if (filesToRemove.size() > 0) {
+    } else if (!filesToRemove.isEmpty()) {
       // DeleteFiles case
       DeleteFiles deleteFiles = transaction.newDelete();
       filesToRemove.forEach(deleteFiles::deleteFile);
@@ -385,18 +385,18 @@ class BaseSnapshotDeltaLakeTableAction implements SnapshotDeltaLakeTable {
         nameMappingString != null ? NameMappingParser.fromJson(nameMappingString) : null;
     Metrics metrics = getMetricsForFile(file, format, metricsConfig, nameMapping);
 
-    String partition =
+    List<String> partitionValueList =
         spec.fields().stream()
             .map(PartitionField::name)
-            .map(name -> String.format("%s=%s", name, partitionValues.get(name)))
-            .collect(Collectors.joining("/"));
+            .map(partitionValues::get)
+            .collect(Collectors.toList());
 
     return DataFiles.builder(spec)
         .withPath(fullFilePath)
         .withFormat(format)
         .withFileSizeInBytes(fileSize)
         .withMetrics(metrics)
-        .withPartitionPath(partition)
+        .withPartitionValues(partitionValueList)
         .build();
   }
 
@@ -450,15 +450,11 @@ class BaseSnapshotDeltaLakeTableAction implements SnapshotDeltaLakeTable {
    */
   private static String getFullFilePath(String path, String tableRoot) {
     URI dataFileUri = URI.create(path);
-    try {
-      String decodedPath = new URLCodec().decode(path);
-      if (dataFileUri.isAbsolute()) {
-        return decodedPath;
-      } else {
-        return tableRoot + File.separator + decodedPath;
-      }
-    } catch (DecoderException e) {
-      throw new IllegalArgumentException(String.format("Cannot decode path %s", path), e);
+    String decodedPath = URLDecoder.decode(path, StandardCharsets.UTF_8);
+    if (dataFileUri.isAbsolute()) {
+      return decodedPath;
+    } else {
+      return tableRoot + File.separator + decodedPath;
     }
   }
 }

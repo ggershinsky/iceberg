@@ -25,8 +25,10 @@ import java.nio.ByteBuffer;
 import java.util.List;
 import org.apache.iceberg.types.Types;
 
-/** Represents a manifest file that can be scanned to find data files in a table. */
+/** Represents a manifest file that can be scanned to find files in a table. */
 public interface ManifestFile {
+  int PARTITION_SUMMARIES_ELEMENT_ID = 508;
+
   Types.NestedField PATH =
       required(500, "manifest_path", Types.StringType.get(), "Location URI with FS scheme");
   Types.NestedField LENGTH =
@@ -49,14 +51,14 @@ public interface ManifestFile {
           Types.LongType.get(),
           "Lowest sequence number in the manifest");
   Types.NestedField SNAPSHOT_ID =
-      optional(
+      required(
           503, "added_snapshot_id", Types.LongType.get(), "Snapshot ID that added the manifest");
   Types.NestedField ADDED_FILES_COUNT =
-      optional(504, "added_data_files_count", Types.IntegerType.get(), "Added entry count");
+      optional(504, "added_files_count", Types.IntegerType.get(), "Added entry count");
   Types.NestedField EXISTING_FILES_COUNT =
-      optional(505, "existing_data_files_count", Types.IntegerType.get(), "Existing entry count");
+      optional(505, "existing_files_count", Types.IntegerType.get(), "Existing entry count");
   Types.NestedField DELETED_FILES_COUNT =
-      optional(506, "deleted_data_files_count", Types.IntegerType.get(), "Deleted entry count");
+      optional(506, "deleted_files_count", Types.IntegerType.get(), "Deleted entry count");
   Types.NestedField ADDED_ROWS_COUNT =
       optional(512, "added_rows_count", Types.LongType.get(), "Added rows count");
   Types.NestedField EXISTING_ROWS_COUNT =
@@ -83,11 +85,17 @@ public interface ManifestFile {
       optional(
           507,
           "partitions",
-          Types.ListType.ofRequired(508, PARTITION_SUMMARY_TYPE),
+          Types.ListType.ofRequired(PARTITION_SUMMARIES_ELEMENT_ID, PARTITION_SUMMARY_TYPE),
           "Summary for each partition");
   Types.NestedField KEY_METADATA =
       optional(519, "key_metadata", Types.BinaryType.get(), "Encryption key metadata blob");
-  // next ID to assign: 520
+  Types.NestedField FIRST_ROW_ID =
+      optional(
+          520,
+          "first_row_id",
+          Types.LongType.get(),
+          "Starting row ID to assign to new rows in ADDED data files");
+  // next ID to assign: 521
 
   Schema SCHEMA =
       new Schema(
@@ -105,7 +113,8 @@ public interface ManifestFile {
           EXISTING_ROWS_COUNT,
           DELETED_ROWS_COUNT,
           PARTITION_SUMMARIES,
-          KEY_METADATA);
+          KEY_METADATA,
+          FIRST_ROW_ID);
 
   static Schema schema() {
     return SCHEMA;
@@ -141,10 +150,10 @@ public interface ManifestFile {
     return addedFilesCount() == null || addedFilesCount() > 0;
   }
 
-  /** Returns the number of data files with status ADDED in the manifest file. */
+  /** Returns the number of files with status ADDED in the manifest file. */
   Integer addedFilesCount();
 
-  /** Returns the total number of rows in all data files with status ADDED in the manifest file. */
+  /** Returns the total number of rows in all files with status ADDED in the manifest file. */
   Long addedRowsCount();
 
   /**
@@ -156,12 +165,10 @@ public interface ManifestFile {
     return existingFilesCount() == null || existingFilesCount() > 0;
   }
 
-  /** Returns the number of data files with status EXISTING in the manifest file. */
+  /** Returns the number of files with status EXISTING in the manifest file. */
   Integer existingFilesCount();
 
-  /**
-   * Returns the total number of rows in all data files with status EXISTING in the manifest file.
-   */
+  /** Returns the total number of rows in all files with status EXISTING in the manifest file. */
   Long existingRowsCount();
 
   /**
@@ -173,12 +180,10 @@ public interface ManifestFile {
     return deletedFilesCount() == null || deletedFilesCount() > 0;
   }
 
-  /** Returns the number of data files with status DELETED in the manifest file. */
+  /** Returns the number of files with status DELETED in the manifest file. */
   Integer deletedFilesCount();
 
-  /**
-   * Returns the total number of rows in all data files with status DELETED in the manifest file.
-   */
+  /** Returns the total number of rows in all files with status DELETED in the manifest file. */
   Long deletedRowsCount();
 
   /**
@@ -200,6 +205,11 @@ public interface ManifestFile {
     return null;
   }
 
+  /** Returns the starting row ID to assign to new rows in ADDED data files. */
+  default Long firstRowId() {
+    return null;
+  }
+
   /**
    * Copies this {@link ManifestFile manifest file}. Readers can reuse manifest file instances; use
    * this method to make defensive copies.
@@ -214,12 +224,12 @@ public interface ManifestFile {
       return PARTITION_SUMMARY_TYPE;
     }
 
-    /** Returns true if at least one data file in the manifest has a null value for the field. */
+    /** Returns true if at least one file in the manifest has a null value for the field. */
     boolean containsNull();
 
     /**
-     * Returns true if at least one data file in the manifest has a NaN value for the field. Null if
-     * this information doesn't exist.
+     * Returns true if at least one file in the manifest has a NaN value for the field. Null if this
+     * information doesn't exist.
      *
      * <p>Default to return null to ensure backward compatibility.
      */

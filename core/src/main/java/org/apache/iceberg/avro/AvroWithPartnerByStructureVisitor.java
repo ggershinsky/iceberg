@@ -23,6 +23,7 @@ import java.util.List;
 import org.apache.avro.Schema;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.types.Type;
 import org.apache.iceberg.util.Pair;
 
 /**
@@ -38,7 +39,12 @@ public abstract class AvroWithPartnerByStructureVisitor<P, T> {
       P partner, Schema schema, AvroWithPartnerByStructureVisitor<P, T> visitor) {
     switch (schema.getType()) {
       case RECORD:
-        return visitRecord(partner, schema, visitor);
+        if (schema.getLogicalType() instanceof VariantLogicalType
+            || visitor.isVariantType(partner)) {
+          return visitVariant(partner, schema, visitor);
+        } else {
+          return visitRecord(partner, schema, visitor);
+        }
 
       case UNION:
         return visitUnion(partner, schema, visitor);
@@ -59,6 +65,23 @@ public abstract class AvroWithPartnerByStructureVisitor<P, T> {
   }
 
   // ---------------------------------- Static helpers ---------------------------------------------
+
+  private static <P, R> R visitVariant(
+      P partner, Schema variant, AvroWithPartnerByStructureVisitor<P, R> visitor) {
+    // check to make sure this hasn't been visited before
+    String name = variant.getFullName();
+    Preconditions.checkState(
+        !visitor.recordLevels.contains(name), "Cannot process recursive Avro record %s", name);
+
+    visitor.recordLevels.push(name);
+
+    R metadataResult = visit(null, variant.getField("metadata").schema(), visitor);
+    R valueResult = visit(null, variant.getField("value").schema(), visitor);
+
+    visitor.recordLevels.pop();
+
+    return visitor.variant(partner, metadataResult, valueResult);
+  }
 
   private static <P, T> T visitRecord(
       P struct, Schema record, AvroWithPartnerByStructureVisitor<P, T> visitor) {
@@ -93,14 +116,36 @@ public abstract class AvroWithPartnerByStructureVisitor<P, T> {
   private static <P, T> T visitUnion(
       P type, Schema union, AvroWithPartnerByStructureVisitor<P, T> visitor) {
     List<Schema> types = union.getTypes();
-    Preconditions.checkArgument(
-        AvroSchemaUtil.isOptionSchema(union), "Cannot visit non-option union: %s", union);
     List<T> options = Lists.newArrayListWithExpectedSize(types.size());
-    for (Schema branch : types) {
-      if (branch.getType() == Schema.Type.NULL) {
-        options.add(visit(visitor.nullType(), branch, visitor));
-      } else {
-        options.add(visit(type, branch, visitor));
+    if (AvroSchemaUtil.isOptionSchema(union)) {
+      for (Schema branch : types) {
+        if (branch.getType() == Schema.Type.NULL) {
+          options.add(visit(visitor.nullType(), branch, visitor));
+        } else {
+          options.add(visit(type, branch, visitor));
+        }
+      }
+    } else {
+      boolean encounteredNullWithoutUnknown = false;
+      for (int i = 0; i < types.size(); i++) {
+        // For a union-type (a, b, NULL, c) and the corresponding struct type (tag, a, b, c), the
+        // types match according to the following pattern:
+        // Before NULL, branch type i in the union maps to struct field i + 1.
+        // After NULL, branch type i in the union maps to struct field i.
+        int structFieldIndex = encounteredNullWithoutUnknown ? i : i + 1;
+        if (types.get(i).getType() == Schema.Type.NULL) {
+          visit(visitor.nullType(), types.get(i), visitor);
+          Pair<String, P> nameAndType = visitor.fieldNameAndType(type, structFieldIndex);
+          if (((Type) nameAndType.second()).typeId() != Type.TypeID.UNKNOWN) {
+            encounteredNullWithoutUnknown = true;
+          }
+        } else {
+          options.add(
+              visit(
+                  visitor.fieldNameAndType(type, structFieldIndex).second(),
+                  types.get(i),
+                  visitor));
+        }
       }
     }
     return visitor.union(type, union, options);
@@ -127,10 +172,14 @@ public abstract class AvroWithPartnerByStructureVisitor<P, T> {
   }
 
   /** Just for checking state. */
-  private Deque<String> recordLevels = Lists.newLinkedList();
+  private final Deque<String> recordLevels = Lists.newLinkedList();
 
   // ---------------------------------- Partner type methods
   // ---------------------------------------------
+
+  protected boolean isVariantType(P type) {
+    return false;
+  }
 
   protected abstract boolean isMapType(P type);
 
@@ -166,6 +215,10 @@ public abstract class AvroWithPartnerByStructureVisitor<P, T> {
 
   public T map(P sMap, Schema map, T value) {
     return null;
+  }
+
+  public T variant(P partner, T metadata, T value) {
+    throw new UnsupportedOperationException("Visitor does not support variant");
   }
 
   public T primitive(P type, Schema primitive) {

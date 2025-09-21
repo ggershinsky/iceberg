@@ -18,13 +18,16 @@
  */
 package org.apache.iceberg.actions;
 
+import java.util.Map;
 import java.util.Set;
-import org.apache.iceberg.DataFile;
 import org.apache.iceberg.RewriteFiles;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.exceptions.CleanableFailure;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
-import org.apache.iceberg.relocated.com.google.common.collect.Sets;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.util.DataFileSet;
+import org.apache.iceberg.util.DeleteFileSet;
 import org.apache.iceberg.util.Tasks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,6 +39,7 @@ public class RewriteDataFilesCommitManager {
   private final Table table;
   private final long startingSnapshotId;
   private final boolean useStartingSequenceNumber;
+  private final Map<String, String> snapshotProperties;
 
   // constructor used for testing
   public RewriteDataFilesCommitManager(Table table) {
@@ -48,9 +52,18 @@ public class RewriteDataFilesCommitManager {
 
   public RewriteDataFilesCommitManager(
       Table table, long startingSnapshotId, boolean useStartingSequenceNumber) {
+    this(table, startingSnapshotId, useStartingSequenceNumber, ImmutableMap.of());
+  }
+
+  public RewriteDataFilesCommitManager(
+      Table table,
+      long startingSnapshotId,
+      boolean useStartingSequenceNumber,
+      Map<String, String> snapshotProperties) {
     this.table = table;
     this.startingSnapshotId = startingSnapshotId;
     this.useStartingSequenceNumber = useStartingSequenceNumber;
+    this.snapshotProperties = snapshotProperties;
   }
 
   /**
@@ -60,20 +73,26 @@ public class RewriteDataFilesCommitManager {
    * @param fileGroups fileSets to commit
    */
   public void commitFileGroups(Set<RewriteFileGroup> fileGroups) {
-    Set<DataFile> rewrittenDataFiles = Sets.newHashSet();
-    Set<DataFile> addedDataFiles = Sets.newHashSet();
+    DataFileSet rewrittenDataFiles = DataFileSet.create();
+    DataFileSet addedDataFiles = DataFileSet.create();
+    DeleteFileSet danglingDVs = DeleteFileSet.create();
     for (RewriteFileGroup group : fileGroups) {
       rewrittenDataFiles.addAll(group.rewrittenFiles());
       addedDataFiles.addAll(group.addedFiles());
+      danglingDVs.addAll(group.danglingDVs());
     }
 
     RewriteFiles rewrite = table.newRewrite().validateFromSnapshot(startingSnapshotId);
     if (useStartingSequenceNumber) {
       long sequenceNumber = table.snapshot(startingSnapshotId).sequenceNumber();
-      rewrite.rewriteFiles(rewrittenDataFiles, addedDataFiles, sequenceNumber);
-    } else {
-      rewrite.rewriteFiles(rewrittenDataFiles, addedDataFiles);
+      rewrite.dataSequenceNumber(sequenceNumber);
     }
+
+    rewrittenDataFiles.forEach(rewrite::deleteFile);
+    addedDataFiles.forEach(rewrite::addFile);
+    danglingDVs.forEach(rewrite::deleteFile);
+
+    snapshotProperties.forEach(rewrite::set);
 
     rewrite.commit();
   }
@@ -91,8 +110,8 @@ public class RewriteDataFilesCommitManager {
     Tasks.foreach(fileGroup.addedFiles())
         .noRetry()
         .suppressFailureWhenFinished()
-        .onFailure((dataFile, exc) -> LOG.warn("Failed to delete: {}", dataFile.path(), exc))
-        .run(dataFile -> table.io().deleteFile(dataFile.path().toString()));
+        .onFailure((dataFile, exc) -> LOG.warn("Failed to delete: {}", dataFile.location(), exc))
+        .run(dataFile -> table.io().deleteFile(dataFile.location()));
   }
 
   public void commitOrClean(Set<RewriteFileGroup> rewriteGroups) {
@@ -105,8 +124,12 @@ public class RewriteDataFilesCommitManager {
           e);
       throw e;
     } catch (Exception e) {
-      LOG.error("Cannot commit groups {}, attempting to clean up written files", rewriteGroups, e);
-      rewriteGroups.forEach(this::abortFileGroup);
+      if (e instanceof CleanableFailure) {
+        LOG.error(
+            "Cannot commit groups {}, attempting to clean up written files", rewriteGroups, e);
+        rewriteGroups.forEach(this::abortFileGroup);
+      }
+
       throw e;
     }
   }

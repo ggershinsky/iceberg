@@ -26,6 +26,7 @@ import org.apache.iceberg.MetricsConfig;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.StructLike;
+import org.apache.iceberg.Table;
 import org.apache.iceberg.avro.Avro;
 import org.apache.iceberg.data.avro.DataWriter;
 import org.apache.iceberg.data.orc.GenericOrcWriter;
@@ -33,26 +34,28 @@ import org.apache.iceberg.data.parquet.GenericParquetWriter;
 import org.apache.iceberg.deletes.EqualityDeleteWriter;
 import org.apache.iceberg.deletes.PositionDeleteWriter;
 import org.apache.iceberg.encryption.EncryptedOutputFile;
+import org.apache.iceberg.encryption.EncryptionUtil;
 import org.apache.iceberg.io.FileAppender;
 import org.apache.iceberg.io.FileAppenderFactory;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.orc.ORC;
 import org.apache.iceberg.parquet.Parquet;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 
 /** Factory to create a new {@link FileAppender} to write {@link Record}s. */
 public class GenericAppenderFactory implements FileAppenderFactory<Record> {
-
+  private final Table table;
   private final Schema schema;
   private final PartitionSpec spec;
   private final int[] equalityFieldIds;
   private final Schema eqDeleteRowSchema;
   private final Schema posDeleteRowSchema;
-  private final Map<String, String> config = Maps.newHashMap();
+  private final Map<String, String> config;
 
   public GenericAppenderFactory(Schema schema) {
-    this(schema, PartitionSpec.unpartitioned(), null, null, null);
+    this(schema, PartitionSpec.unpartitioned());
   }
 
   public GenericAppenderFactory(Schema schema, PartitionSpec spec) {
@@ -65,30 +68,73 @@ public class GenericAppenderFactory implements FileAppenderFactory<Record> {
       int[] equalityFieldIds,
       Schema eqDeleteRowSchema,
       Schema posDeleteRowSchema) {
-    this.schema = schema;
-    this.spec = spec;
+    this(null, schema, spec, null, equalityFieldIds, eqDeleteRowSchema, posDeleteRowSchema);
+  }
+
+  /**
+   * Constructor for GenericAppenderFactory.
+   *
+   * @param table iceberg table
+   * @param schema the schema of the records to write
+   * @param spec the partition spec of the records
+   * @param config the configuration for the writer
+   * @param equalityFieldIds the field ids for equality delete
+   * @param eqDeleteRowSchema the schema for equality delete rows
+   * @param posDeleteRowSchema the schema for position delete rows
+   */
+  public GenericAppenderFactory(
+      Table table,
+      Schema schema,
+      PartitionSpec spec,
+      Map<String, String> config,
+      int[] equalityFieldIds,
+      Schema eqDeleteRowSchema,
+      Schema posDeleteRowSchema) {
+    this.table = table;
+    this.config = config == null ? Maps.newHashMap() : config;
+
+    if (table != null) {
+      // If the table is provided and schema and spec are not provided, derive them from the table
+      this.schema = schema == null ? table.schema() : schema;
+      this.spec = spec == null ? table.spec() : spec;
+      validateMetricsConfig(this.config);
+    } else {
+      this.schema = schema;
+      this.spec = spec;
+    }
+
     this.equalityFieldIds = equalityFieldIds;
     this.eqDeleteRowSchema = eqDeleteRowSchema;
     this.posDeleteRowSchema = posDeleteRowSchema;
   }
 
   public GenericAppenderFactory set(String property, String value) {
+    validateMetricsConfig(ImmutableMap.of(property, value));
     config.put(property, value);
     return this;
   }
 
   public GenericAppenderFactory setAll(Map<String, String> properties) {
+    validateMetricsConfig(properties);
     config.putAll(properties);
     return this;
   }
 
   @Override
   public FileAppender<Record> newAppender(OutputFile outputFile, FileFormat fileFormat) {
-    MetricsConfig metricsConfig = MetricsConfig.fromProperties(config);
+    return newAppender(EncryptionUtil.plainAsEncryptedOutput(outputFile), fileFormat);
+  }
+
+  @Override
+  public FileAppender<Record> newAppender(
+      EncryptedOutputFile encryptedOutputFile, FileFormat fileFormat) {
+    MetricsConfig metricsConfig =
+        table != null ? MetricsConfig.forTable(table) : MetricsConfig.fromProperties(config);
+
     try {
       switch (fileFormat) {
         case AVRO:
-          return Avro.write(outputFile)
+          return Avro.write(encryptedOutputFile)
               .schema(schema)
               .createWriterFunc(DataWriter::create)
               .metricsConfig(metricsConfig)
@@ -97,16 +143,16 @@ public class GenericAppenderFactory implements FileAppenderFactory<Record> {
               .build();
 
         case PARQUET:
-          return Parquet.write(outputFile)
+          return Parquet.write(encryptedOutputFile)
               .schema(schema)
-              .createWriterFunc(GenericParquetWriter::buildWriter)
+              .createWriterFunc(GenericParquetWriter::create)
               .setAll(config)
               .metricsConfig(metricsConfig)
               .overwrite()
               .build();
 
         case ORC:
-          return ORC.write(outputFile)
+          return ORC.write(encryptedOutputFile)
               .schema(schema)
               .createWriterFunc(GenericOrcWriter::buildWriter)
               .setAll(config)
@@ -127,7 +173,7 @@ public class GenericAppenderFactory implements FileAppenderFactory<Record> {
   public org.apache.iceberg.io.DataWriter<Record> newDataWriter(
       EncryptedOutputFile file, FileFormat format, StructLike partition) {
     return new org.apache.iceberg.io.DataWriter<>(
-        newAppender(file.encryptingOutputFile(), format),
+        newAppender(file, format),
         format,
         file.encryptingOutputFile().location(),
         spec,
@@ -144,12 +190,13 @@ public class GenericAppenderFactory implements FileAppenderFactory<Record> {
     Preconditions.checkNotNull(
         eqDeleteRowSchema,
         "Equality delete row schema shouldn't be null when creating equality-delete writer");
+    MetricsConfig metricsConfig =
+        table != null ? MetricsConfig.forTable(table) : MetricsConfig.fromProperties(config);
 
-    MetricsConfig metricsConfig = MetricsConfig.fromProperties(config);
     try {
       switch (format) {
         case AVRO:
-          return Avro.writeDeletes(file.encryptingOutputFile())
+          return Avro.writeDeletes(file)
               .createWriterFunc(DataWriter::create)
               .withPartition(partition)
               .overwrite()
@@ -161,7 +208,7 @@ public class GenericAppenderFactory implements FileAppenderFactory<Record> {
               .buildEqualityWriter();
 
         case ORC:
-          return ORC.writeDeletes(file.encryptingOutputFile())
+          return ORC.writeDeletes(file)
               .createWriterFunc(GenericOrcWriter::buildWriter)
               .withPartition(partition)
               .overwrite()
@@ -174,8 +221,8 @@ public class GenericAppenderFactory implements FileAppenderFactory<Record> {
               .buildEqualityWriter();
 
         case PARQUET:
-          return Parquet.writeDeletes(file.encryptingOutputFile())
-              .createWriterFunc(GenericParquetWriter::buildWriter)
+          return Parquet.writeDeletes(file)
+              .createWriterFunc(GenericParquetWriter::create)
               .withPartition(partition)
               .overwrite()
               .setAll(config)
@@ -198,11 +245,15 @@ public class GenericAppenderFactory implements FileAppenderFactory<Record> {
   @Override
   public PositionDeleteWriter<Record> newPosDeleteWriter(
       EncryptedOutputFile file, FileFormat format, StructLike partition) {
-    MetricsConfig metricsConfig = MetricsConfig.fromProperties(config);
+    MetricsConfig metricsConfig =
+        table != null
+            ? MetricsConfig.forPositionDelete(table)
+            : MetricsConfig.fromProperties(config);
+
     try {
       switch (format) {
         case AVRO:
-          return Avro.writeDeletes(file.encryptingOutputFile())
+          return Avro.writeDeletes(file)
               .createWriterFunc(DataWriter::create)
               .withPartition(partition)
               .overwrite()
@@ -213,7 +264,7 @@ public class GenericAppenderFactory implements FileAppenderFactory<Record> {
               .buildPositionWriter();
 
         case ORC:
-          return ORC.writeDeletes(file.encryptingOutputFile())
+          return ORC.writeDeletes(file)
               .createWriterFunc(GenericOrcWriter::buildWriter)
               .withPartition(partition)
               .overwrite()
@@ -224,8 +275,8 @@ public class GenericAppenderFactory implements FileAppenderFactory<Record> {
               .buildPositionWriter();
 
         case PARQUET:
-          return Parquet.writeDeletes(file.encryptingOutputFile())
-              .createWriterFunc(GenericParquetWriter::buildWriter)
+          return Parquet.writeDeletes(file)
+              .createWriterFunc(GenericParquetWriter::create)
               .withPartition(partition)
               .overwrite()
               .setAll(config)
@@ -241,6 +292,17 @@ public class GenericAppenderFactory implements FileAppenderFactory<Record> {
       }
     } catch (IOException e) {
       throw new UncheckedIOException(e);
+    }
+  }
+
+  private void validateMetricsConfig(Map<String, String> writeConfig) {
+    if (table == null) {
+      return;
+    }
+
+    if (writeConfig.keySet().stream().anyMatch(k -> k.startsWith("write.metadata.metrics."))) {
+      throw new IllegalArgumentException(
+          "Cannot set metrics properties when the table is provided, use table properties instead");
     }
   }
 }

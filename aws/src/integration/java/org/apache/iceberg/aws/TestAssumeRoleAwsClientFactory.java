@@ -18,6 +18,10 @@
  */
 package org.apache.iceberg.aws;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
 import org.apache.iceberg.aws.glue.GlueCatalog;
@@ -25,14 +29,13 @@ import org.apache.iceberg.aws.s3.S3FileIO;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
-import org.assertj.core.api.Assertions;
 import org.assertj.core.api.InstanceOfAssertFactories;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariables;
 import software.amazon.awssdk.core.exception.SdkServiceException;
 import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient;
 import software.amazon.awssdk.regions.Region;
@@ -42,19 +45,26 @@ import software.amazon.awssdk.services.iam.model.CreateRoleRequest;
 import software.amazon.awssdk.services.iam.model.CreateRoleResponse;
 import software.amazon.awssdk.services.iam.model.DeleteRolePolicyRequest;
 import software.amazon.awssdk.services.iam.model.DeleteRoleRequest;
+import software.amazon.awssdk.services.iam.model.GetRolePolicyRequest;
 import software.amazon.awssdk.services.iam.model.PutRolePolicyRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 
+@EnabledIfEnvironmentVariables({
+  @EnabledIfEnvironmentVariable(named = AwsIntegTestUtil.AWS_ACCESS_KEY_ID, matches = ".*"),
+  @EnabledIfEnvironmentVariable(named = AwsIntegTestUtil.AWS_SECRET_ACCESS_KEY, matches = ".*"),
+  @EnabledIfEnvironmentVariable(named = AwsIntegTestUtil.AWS_SESSION_TOKEN, matches = ".*"),
+  @EnabledIfEnvironmentVariable(named = AwsIntegTestUtil.AWS_TEST_ACCOUNT_ID, matches = "\\d{12}"),
+  @EnabledIfEnvironmentVariable(named = AwsIntegTestUtil.AWS_REGION, matches = ".*"),
+  @EnabledIfEnvironmentVariable(named = AwsIntegTestUtil.AWS_TEST_BUCKET, matches = ".*")
+})
 public class TestAssumeRoleAwsClientFactory {
-
-  private static final Logger LOG = LoggerFactory.getLogger(TestAssumeRoleAwsClientFactory.class);
 
   private IamClient iam;
   private String roleName;
   private Map<String, String> assumeRoleProperties;
   private String policyName;
 
-  @Before
+  @BeforeEach
   public void before() {
     roleName = UUID.randomUUID().toString();
     iam =
@@ -82,7 +92,8 @@ public class TestAssumeRoleAwsClientFactory {
     assumeRoleProperties = Maps.newHashMap();
     assumeRoleProperties.put(
         AwsProperties.CLIENT_FACTORY, AssumeRoleAwsClientFactory.class.getName());
-    assumeRoleProperties.put(AwsProperties.HTTP_CLIENT_TYPE, AwsProperties.HTTP_CLIENT_TYPE_APACHE);
+    assumeRoleProperties.put(
+        HttpClientProperties.CLIENT_TYPE, HttpClientProperties.CLIENT_TYPE_APACHE);
     assumeRoleProperties.put(
         AwsProperties.CLIENT_ASSUME_ROLE_REGION, AwsIntegTestUtil.testRegion());
     assumeRoleProperties.put(AwsProperties.CLIENT_ASSUME_ROLE_ARN, response.role().arn());
@@ -91,7 +102,7 @@ public class TestAssumeRoleAwsClientFactory {
     policyName = UUID.randomUUID().toString();
   }
 
-  @After
+  @AfterEach
   public void after() {
     iam.deleteRolePolicy(
         DeleteRolePolicyRequest.builder().roleName(roleName).policyName(policyName).build());
@@ -99,7 +110,7 @@ public class TestAssumeRoleAwsClientFactory {
   }
 
   @Test
-  public void testAssumeRoleGlueCatalog() throws Exception {
+  public void testAssumeRoleGlueCatalog() {
     String glueArnPrefix = "arn:aws:glue:*:" + AwsIntegTestUtil.testAccountId();
     iam.putRolePolicy(
         PutRolePolicyRequest.builder()
@@ -130,11 +141,12 @@ public class TestAssumeRoleAwsClientFactory {
     GlueCatalog glueCatalog = new GlueCatalog();
     assumeRoleProperties.put("warehouse", "s3://path");
     glueCatalog.initialize("test", assumeRoleProperties);
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 glueCatalog.createNamespace(
                     Namespace.of("denied_" + UUID.randomUUID().toString().replace("-", ""))))
-        .isInstanceOf(AccessDeniedException.class);
+        .isInstanceOf(AccessDeniedException.class)
+        .hasMessageContaining("not authorized to perform: glue:CreateDatabase");
 
     Namespace namespace = Namespace.of("allowed_" + UUID.randomUUID().toString().replace("-", ""));
     try {
@@ -173,22 +185,35 @@ public class TestAssumeRoleAwsClientFactory {
 
     S3FileIO s3FileIO = new S3FileIO();
     s3FileIO.initialize(assumeRoleProperties);
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 s3FileIO
                     .newInputFile("s3://" + AwsIntegTestUtil.testBucketName() + "/denied/file")
                     .exists())
         .isInstanceOf(S3Exception.class)
+        .hasMessageContaining("Forbidden")
         .asInstanceOf(InstanceOfAssertFactories.type(S3Exception.class))
         .extracting(SdkServiceException::statusCode)
         .isEqualTo(403);
 
     InputFile inputFile =
         s3FileIO.newInputFile("s3://" + AwsIntegTestUtil.testBucketName() + "/allowed/file");
-    Assert.assertFalse("should be able to access file", inputFile.exists());
+    assertThat(inputFile.exists()).isFalse();
   }
 
-  private void waitForIamConsistency() throws Exception {
-    Thread.sleep(10000); // sleep to make sure IAM up to date
+  private void waitForIamConsistency() {
+    Awaitility.await("wait for IAM role policy to update.")
+        .pollDelay(Duration.ofSeconds(1))
+        .atMost(Duration.ofSeconds(10))
+        .ignoreExceptions()
+        .untilAsserted(
+            () ->
+                assertThat(
+                        iam.getRolePolicy(
+                            GetRolePolicyRequest.builder()
+                                .roleName(roleName)
+                                .roleName(policyName)
+                                .build()))
+                    .isNotNull());
   }
 }

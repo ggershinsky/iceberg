@@ -19,6 +19,7 @@
 package org.apache.iceberg.util;
 
 import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonFactoryBuilder;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -26,20 +27,28 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.io.BaseEncoding;
 
 public class JsonUtil {
 
   private JsonUtil() {}
 
-  private static final JsonFactory FACTORY = new JsonFactory();
+  private static final JsonFactory FACTORY =
+      new JsonFactoryBuilder()
+          .configure(JsonFactory.Feature.INTERN_FIELD_NAMES, false)
+          .configure(JsonFactory.Feature.FAIL_ON_SYMBOL_HASH_OVERFLOW, false)
+          .build();
   private static final ObjectMapper MAPPER = new ObjectMapper(FACTORY);
 
   public static JsonFactory factory() {
@@ -140,6 +149,13 @@ public class JsonUtil {
     return pNode.asLong();
   }
 
+  public static Boolean getBoolOrNull(String property, JsonNode node) {
+    if (!node.hasNonNull(property)) {
+      return null;
+    }
+    return getBool(property, node);
+  }
+
   public static boolean getBool(String property, JsonNode node) {
     Preconditions.checkArgument(node.has(property), "Cannot parse missing boolean: %s", property);
     JsonNode pNode = node.get(property);
@@ -173,12 +189,32 @@ public class JsonUtil {
     return getString(property, node);
   }
 
+  public static ByteBuffer getByteBufferOrNull(String property, JsonNode node) {
+    if (!node.has(property) || node.get(property).isNull()) {
+      return null;
+    }
+
+    JsonNode pNode = node.get(property);
+    Preconditions.checkArgument(
+        pNode.isTextual(), "Cannot parse byte buffer from non-text value: %s: %s", property, pNode);
+    return ByteBuffer.wrap(
+        BaseEncoding.base16().decode(pNode.textValue().toUpperCase(Locale.ROOT)));
+  }
+
+  public static Map<String, String> getStringMapOrNull(String property, JsonNode node) {
+    if (!node.has(property)) {
+      return null;
+    }
+
+    return getStringMap(property, node);
+  }
+
   public static Map<String, String> getStringMap(String property, JsonNode node) {
     Preconditions.checkArgument(node.has(property), "Cannot parse missing map: %s", property);
     JsonNode pNode = node.get(property);
     Preconditions.checkArgument(
         pNode != null && !pNode.isNull() && pNode.isObject(),
-        "Cannot parse from non-object value: %s: %s",
+        "Cannot parse string map from non-object value: %s: %s",
         property,
         pNode);
 
@@ -189,6 +225,25 @@ public class JsonUtil {
       builder.put(field, getString(field, pNode));
     }
     return builder.build();
+  }
+
+  public static Map<String, String> getStringMapNullableValues(String property, JsonNode node) {
+    Preconditions.checkArgument(node.has(property), "Cannot parse missing map: %s", property);
+    JsonNode pNode = node.get(property);
+    Preconditions.checkArgument(
+        pNode != null && !pNode.isNull() && pNode.isObject(),
+        "Cannot parse string map from non-object value: %s: %s",
+        property,
+        pNode);
+
+    Map<String, String> map = Maps.newHashMap();
+    Iterator<String> fields = pNode.fieldNames();
+    while (fields.hasNext()) {
+      String field = fields.next();
+      map.put(field, getStringOrNull(field, pNode));
+    }
+
+    return map;
   }
 
   public static String[] getStringArray(JsonNode node) {
@@ -229,6 +284,14 @@ public class JsonUtil {
         .build();
   }
 
+  public static int[] getIntArrayOrNull(String property, JsonNode node) {
+    if (!node.has(property) || node.get(property).isNull()) {
+      return null;
+    }
+
+    return ArrayUtil.toIntArray(getIntegerList(property, node));
+  }
+
   public static List<Integer> getIntegerList(String property, JsonNode node) {
     Preconditions.checkArgument(node.has(property), "Cannot parse missing list: %s", property);
     return ImmutableList.<Integer>builder()
@@ -256,6 +319,14 @@ public class JsonUtil {
     return ImmutableList.<Long>builder().addAll(new JsonLongArrayIterator(property, node)).build();
   }
 
+  public static List<Long> getLongListOrNull(String property, JsonNode node) {
+    if (!node.has(property) || node.get(property).isNull()) {
+      return null;
+    }
+
+    return ImmutableList.<Long>builder().addAll(new JsonLongArrayIterator(property, node)).build();
+  }
+
   public static Set<Long> getLongSetOrNull(String property, JsonNode node) {
     if (!node.hasNonNull(property)) {
       return null;
@@ -276,11 +347,61 @@ public class JsonUtil {
     }
   }
 
+  public static void writeIntegerFieldIfPresent(String key, Integer value, JsonGenerator generator)
+      throws IOException {
+    writeIntegerFieldIf(value != null, key, value, generator);
+  }
+
   public static void writeLongFieldIf(
       boolean condition, String key, Long value, JsonGenerator generator) throws IOException {
     if (condition) {
       generator.writeNumberField(key, value);
     }
+  }
+
+  public static void writeLongFieldIfPresent(String key, Long value, JsonGenerator generator)
+      throws IOException {
+    writeLongFieldIf(value != null, key, value, generator);
+  }
+
+  public static void writeStringFieldIfPresent(String key, String value, JsonGenerator generator)
+      throws IOException {
+    writeStringFieldIf(value != null, key, value, generator);
+  }
+
+  private static void writeStringFieldIf(
+      boolean condition, String key, String value, JsonGenerator generator) throws IOException {
+    if (condition) {
+      generator.writeStringField(key, value);
+    }
+  }
+
+  public static <T> List<T> getObjectListOrNull(
+      String property, JsonNode node, FromJson<T> fromJson) {
+    if (!node.has(property)) {
+      return null;
+    }
+
+    return getObjectList(property, node, fromJson);
+  }
+
+  public static <T> List<T> getObjectList(String property, JsonNode node, FromJson<T> fromJson) {
+    Preconditions.checkArgument(node.has(property), "Cannot parse missing list: %s", property);
+    Iterator<T> iter =
+        new JsonArrayIterator<>(property, node) {
+          @Override
+          T convert(JsonNode element) {
+            return fromJson.parse(element);
+          }
+
+          @Override
+          void validate(JsonNode element) {
+            Preconditions.checkArgument(
+                element.isObject(), "Cannot parse object from non-object value: %s", element);
+          }
+        };
+
+    return ImmutableList.copyOf(iter);
   }
 
   abstract static class JsonArrayIterator<T> implements Iterator<T> {
@@ -291,7 +412,7 @@ public class JsonUtil {
       JsonNode pNode = node.get(property);
       Preconditions.checkArgument(
           pNode != null && !pNode.isNull() && pNode.isArray(),
-          "Cannot parse from non-array value: %s: %s",
+          "Cannot parse JSON array from non-array value: %s: %s",
           property,
           pNode);
       this.elements = pNode.elements();

@@ -18,45 +18,46 @@
  */
 package org.apache.iceberg.metrics;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 import com.fasterxml.jackson.databind.JsonNode;
 import java.util.concurrent.TimeUnit;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 public class TestScanReportParser {
 
   @Test
   public void nullScanReport() {
-    Assertions.assertThatThrownBy(() -> ScanReportParser.fromJson((JsonNode) null))
+    assertThatThrownBy(() -> ScanReportParser.fromJson((JsonNode) null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot parse scan report from null object");
 
-    Assertions.assertThatThrownBy(() -> ScanReportParser.toJson(null))
+    assertThatThrownBy(() -> ScanReportParser.toJson(null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Invalid scan report: null");
   }
 
   @Test
   public void missingFields() {
-    Assertions.assertThatThrownBy(() -> ScanReportParser.fromJson("{}"))
+    assertThatThrownBy(() -> ScanReportParser.fromJson("{}"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot parse missing string: table-name");
 
-    Assertions.assertThatThrownBy(
-            () -> ScanReportParser.fromJson("{\"table-name\":\"roundTripTableName\"}"))
+    assertThatThrownBy(() -> ScanReportParser.fromJson("{\"table-name\":\"roundTripTableName\"}"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot parse missing long: snapshot-id");
 
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 ScanReportParser.fromJson(
                     "{\"table-name\":\"roundTripTableName\",\"snapshot-id\":23,\"filter\":true}"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot parse missing int: schema-id");
 
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 ScanReportParser.fromJson(
                     "{\"table-name\":\"roundTripTableName\",\"snapshot-id\":23,\"filter\":true,"
@@ -83,6 +84,7 @@ public class TestScanReportParser {
     scanMetrics.skippedDeleteManifests().increment(3L);
     scanMetrics.indexedDeleteFiles().increment(10L);
     scanMetrics.positionalDeleteFiles().increment(6L);
+    scanMetrics.dvs().increment();
     scanMetrics.equalityDeleteFiles().increment(4L);
 
     String tableName = "roundTripTableName";
@@ -97,7 +99,7 @@ public class TestScanReportParser {
             .scanMetrics(ScanMetricsResult.fromScanMetrics(scanMetrics))
             .build();
 
-    Assertions.assertThat(
+    assertThat(
             ScanReportParser.fromJson(
                 "{\"table-name\":\"roundTripTableName\",\"snapshot-id\":23,"
                     + "\"filter\":true,\"schema-id\": 4,\"projected-field-ids\": [ 1, 2, 3 ],\"projected-field-names\": [ \"c1\", \"c2\", \"c3\" ],"
@@ -117,6 +119,7 @@ public class TestScanReportParser {
                     + "\"indexed-delete-files\":{\"unit\":\"count\",\"value\":10},"
                     + "\"equality-delete-files\":{\"unit\":\"count\",\"value\":4},"
                     + "\"positional-delete-files\":{\"unit\":\"count\",\"value\":6},"
+                    + "\"dvs\":{\"unit\":\"count\",\"value\":1},"
                     + "\"extra-metric\":\"extra-val\"},"
                     + "\"extra\":\"extraVal\"}"))
         .isEqualTo(scanReport);
@@ -124,14 +127,14 @@ public class TestScanReportParser {
 
   @Test
   public void invalidTableName() {
-    Assertions.assertThatThrownBy(() -> ScanReportParser.fromJson("{\"table-name\":23}"))
+    assertThatThrownBy(() -> ScanReportParser.fromJson("{\"table-name\":23}"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot parse to a string value: table-name: 23");
   }
 
   @Test
   public void invalidSnapshotId() {
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 ScanReportParser.fromJson(
                     "{\"table-name\":\"roundTripTableName\",\"snapshot-id\":\"invalid\"}"))
@@ -141,7 +144,7 @@ public class TestScanReportParser {
 
   @Test
   public void invalidExpressionFilter() {
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 ScanReportParser.fromJson(
                     "{\"table-name\":\"roundTripTableName\",\"snapshot-id\":23,\"filter\":23,\"projection\":23}"))
@@ -151,21 +154,21 @@ public class TestScanReportParser {
 
   @Test
   public void invalidSchema() {
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 ScanReportParser.fromJson(
                     "{\"table-name\":\"roundTripTableName\",\"snapshot-id\":23,\"filter\":true,\"schema-id\":\"23\"}"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot parse to an integer value: schema-id: \"23\"");
 
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 ScanReportParser.fromJson(
                     "{\"table-name\":\"roundTripTableName\",\"snapshot-id\":23,\"filter\":true,\"schema-id\":23,\"projected-field-ids\": [\"1\"],\"metrics\":{}}"))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot parse integer from non-int value in projected-field-ids: \"1\"");
 
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 ScanReportParser.fromJson(
                     "{\"table-name\":\"roundTripTableName\",\"snapshot-id\":23,\"filter\":true,\"schema-id\":23,\"projected-field-ids\": [1],\"projected-field-names\": [1],\"metrics\":{}}"))
@@ -278,13 +281,17 @@ public class TestScanReportParser {
             + "    \"positional-delete-files\" : {\n"
             + "      \"unit\" : \"count\",\n"
             + "      \"value\" : 6\n"
+            + "    },\n"
+            + "    \"dvs\" : {\n"
+            + "      \"unit\" : \"count\",\n"
+            + "      \"value\" : 0\n"
             + "    }\n"
             + "  }\n"
             + "}";
 
     String json = ScanReportParser.toJson(scanReport, true);
-    Assertions.assertThat(ScanReportParser.fromJson(json)).isEqualTo(scanReport);
-    Assertions.assertThat(json).isEqualTo(expectedJson);
+    assertThat(ScanReportParser.fromJson(json)).isEqualTo(scanReport);
+    assertThat(json).isEqualTo(expectedJson);
   }
 
   @Test
@@ -313,8 +320,8 @@ public class TestScanReportParser {
             + "}";
 
     String json = ScanReportParser.toJson(scanReport, true);
-    Assertions.assertThat(ScanReportParser.fromJson(json)).isEqualTo(scanReport);
-    Assertions.assertThat(json).isEqualTo(expectedJson);
+    assertThat(ScanReportParser.fromJson(json)).isEqualTo(scanReport);
+    assertThat(json).isEqualTo(expectedJson);
   }
 
   @Test
@@ -341,8 +348,8 @@ public class TestScanReportParser {
             + "}";
 
     String json = ScanReportParser.toJson(scanReport, true);
-    Assertions.assertThat(ScanReportParser.fromJson(json)).isEqualTo(scanReport);
-    Assertions.assertThat(json).isEqualTo(expectedJson);
+    assertThat(ScanReportParser.fromJson(json)).isEqualTo(scanReport);
+    assertThat(json).isEqualTo(expectedJson);
   }
 
   @Test
@@ -374,7 +381,7 @@ public class TestScanReportParser {
             + "}";
 
     String json = ScanReportParser.toJson(scanReport, true);
-    Assertions.assertThat(ScanReportParser.fromJson(json)).isEqualTo(scanReport);
-    Assertions.assertThat(json).isEqualTo(expectedJson);
+    assertThat(ScanReportParser.fromJson(json)).isEqualTo(scanReport);
+    assertThat(json).isEqualTo(expectedJson);
   }
 }

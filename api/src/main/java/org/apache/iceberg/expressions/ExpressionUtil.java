@@ -23,18 +23,29 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import java.util.stream.StreamSupport;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.transforms.Transforms;
+import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
+import org.apache.iceberg.util.DateTimeUtil;
+import org.apache.iceberg.variants.PhysicalType;
+import org.apache.iceberg.variants.Variant;
+import org.apache.iceberg.variants.VariantArray;
+import org.apache.iceberg.variants.VariantObject;
+import org.apache.iceberg.variants.VariantPrimitive;
+import org.apache.iceberg.variants.VariantValue;
 
 /** Expression utility methods. */
 public class ExpressionUtil {
@@ -51,6 +62,12 @@ public class ExpressionUtil {
   private static final Pattern TIMESTAMPTZ =
       Pattern.compile(
           "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(.\\d{1,9})?)?([-+]\\d{2}:\\d{2}|Z)");
+  private static final Pattern TIMESTAMPNS =
+      Pattern.compile("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(.\\d{7,9})?)?");
+  private static final Pattern TIMESTAMPTZNS =
+      Pattern.compile(
+          "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(.\\d{7,9})?)?([-+]\\d{2}:\\d{2}|Z)");
+
   static final int LONG_IN_PREDICATE_ABBREVIATION_THRESHOLD = 10;
   private static final int LONG_IN_PREDICATE_ABBREVIATION_MIN_GAIN = 5;
 
@@ -71,6 +88,29 @@ public class ExpressionUtil {
   }
 
   /**
+   * Produces an unbound {@link Expression} with the same structure, but with data values replaced
+   * by descriptions.
+   *
+   * <p>Numbers are replaced with magnitude and type, string-like values are replaced by hashes, and
+   * date/time values are replaced by the type.
+   *
+   * @param struct a StructType to bind the expression
+   * @param expr an Expression to sanitize
+   * @param caseSensitive whether to bind case sensitively
+   * @return a sanitized Expression
+   */
+  public static Expression sanitize(
+      Types.StructType struct, Expression expr, boolean caseSensitive) {
+    try {
+      Expression bound = Binder.bind(struct, expr, caseSensitive);
+      return ExpressionVisitors.visit(bound, new ExpressionSanitizer());
+    } catch (RuntimeException e) {
+      // if the expression cannot be bound, sanitize the unbound version
+      return ExpressionVisitors.visit(expr, new ExpressionSanitizer());
+    }
+  }
+
+  /**
    * Produces a sanitized expression string with the same structure, but with data values replaced
    * by descriptions.
    *
@@ -82,6 +122,29 @@ public class ExpressionUtil {
    */
   public static String toSanitizedString(Expression expr) {
     return ExpressionVisitors.visit(expr, new StringSanitizer());
+  }
+
+  /**
+   * Produces a sanitized expression string with the same structure, but with data values replaced
+   * by descriptions.
+   *
+   * <p>Numbers are replaced with magnitude and type, string-like values are replaced by hashes, and
+   * date/time values are replaced by the type.
+   *
+   * @param struct a StructType to bind the expression
+   * @param expr an Expression to sanitize
+   * @param caseSensitive whether to bind case sensitively
+   * @return a sanitized expression string
+   */
+  public static String toSanitizedString(
+      Types.StructType struct, Expression expr, boolean caseSensitive) {
+    try {
+      Expression bound = Binder.bind(struct, expr, caseSensitive);
+      return ExpressionVisitors.visit(bound, new StringSanitizer());
+    } catch (RuntimeException e) {
+      // if the expression cannot be bound, sanitize the unbound version
+      return ExpressionVisitors.visit(expr, new StringSanitizer());
+    }
   }
 
   /**
@@ -176,6 +239,28 @@ public class ExpressionUtil {
     }
   }
 
+  public static <T> UnboundTerm<T> unbind(BoundTerm<T> term) {
+    if (term instanceof BoundTransform) {
+      BoundTransform<?, T> bound = (BoundTransform<?, T>) term;
+      return Expressions.transform(bound.ref().name(), bound.transform());
+    } else if (term instanceof BoundReference) {
+      return Expressions.ref(((BoundReference<T>) term).name());
+    }
+
+    throw new UnsupportedOperationException("Cannot unbind unsupported term: " + term);
+  }
+
+  @SuppressWarnings("unchecked")
+  public static <T> UnboundTerm<T> unbind(Term term) {
+    if (term instanceof UnboundTerm) {
+      return (UnboundTerm<T>) term;
+    } else if (term instanceof BoundTerm) {
+      return unbind((BoundTerm<T>) term);
+    }
+
+    throw new UnsupportedOperationException("Cannot unbind unsupported term: " + term);
+  }
+
   private static class ExpressionSanitizer
       extends ExpressionVisitors.ExpressionVisitor<Expression> {
     private final long now;
@@ -214,8 +299,28 @@ public class ExpressionUtil {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public <T> Expression predicate(BoundPredicate<T> pred) {
-      throw new UnsupportedOperationException("Cannot sanitize bound predicate: " + pred);
+      if (pred.isUnaryPredicate()) {
+        // unary predicates don't need to be sanitized
+        return new UnboundPredicate<>(pred.op(), unbind(pred.term()));
+      } else if (pred.isLiteralPredicate()) {
+        BoundLiteralPredicate<T> bound = (BoundLiteralPredicate<T>) pred;
+        return new UnboundPredicate<>(
+            pred.op(),
+            unbind(pred.term()),
+            (T) sanitize(bound.term().type(), bound.literal(), now, today));
+      } else if (pred.isSetPredicate()) {
+        BoundSetPredicate<T> bound = (BoundSetPredicate<T>) pred;
+        Iterable<T> iter =
+            () ->
+                bound.literalSet().stream()
+                    .map(lit -> (T) sanitize(bound.term().type(), lit, now, today))
+                    .iterator();
+        return new UnboundPredicate<>(pred.op(), unbind(pred.term()), iter);
+      }
+
+      throw new UnsupportedOperationException("Cannot sanitize bound predicate type: " + pred.op());
     }
 
     @Override
@@ -240,9 +345,9 @@ public class ExpressionUtil {
               pred.op(), pred.term(), (T) sanitize(pred.literal(), now, today));
         case IN:
         case NOT_IN:
-          Iterable<String> iter =
-              () -> pred.literals().stream().map(lit -> sanitize(lit, now, today)).iterator();
-          return new UnboundPredicate<>(pred.op(), pred.term(), (Iterable<T>) iter);
+          Iterable<T> iter =
+              () -> pred.literals().stream().map(lit -> (T) sanitize(lit, now, today)).iterator();
+          return new UnboundPredicate<>(pred.op(), pred.term(), iter);
         default:
           throw new UnsupportedOperationException(
               "Cannot sanitize unsupported predicate type: " + pred.op());
@@ -286,9 +391,60 @@ public class ExpressionUtil {
       return "(" + leftResult + " OR " + rightResult + ")";
     }
 
+    private String value(BoundLiteralPredicate<?> pred) {
+      return sanitize(pred.term().type(), pred.literal().value(), nowMicros, today);
+    }
+
     @Override
     public <T> String predicate(BoundPredicate<T> pred) {
-      throw new UnsupportedOperationException("Cannot sanitize bound predicate: " + pred);
+      String term = describe(pred.term());
+      switch (pred.op()) {
+        case IS_NULL:
+          return term + " IS NULL";
+        case NOT_NULL:
+          return term + " IS NOT NULL";
+        case IS_NAN:
+          return "is_nan(" + term + ")";
+        case NOT_NAN:
+          return "not_nan(" + term + ")";
+        case LT:
+          return term + " < " + value((BoundLiteralPredicate<?>) pred);
+        case LT_EQ:
+          return term + " <= " + value((BoundLiteralPredicate<?>) pred);
+        case GT:
+          return term + " > " + value((BoundLiteralPredicate<?>) pred);
+        case GT_EQ:
+          return term + " >= " + value((BoundLiteralPredicate<?>) pred);
+        case EQ:
+          return term + " = " + value((BoundLiteralPredicate<?>) pred);
+        case NOT_EQ:
+          return term + " != " + value((BoundLiteralPredicate<?>) pred);
+        case IN:
+          return term
+              + " IN "
+              + abbreviateValues(
+                      pred.asSetPredicate().literalSet().stream()
+                          .map(lit -> sanitize(pred.term().type(), lit, nowMicros, today))
+                          .collect(Collectors.toList()))
+                  .stream()
+                  .collect(Collectors.joining(", ", "(", ")"));
+        case NOT_IN:
+          return term
+              + " NOT IN "
+              + abbreviateValues(
+                      pred.asSetPredicate().literalSet().stream()
+                          .map(lit -> sanitize(pred.term().type(), lit, nowMicros, today))
+                          .collect(Collectors.toList()))
+                  .stream()
+                  .collect(Collectors.joining(", ", "(", ")"));
+        case STARTS_WITH:
+          return term + " STARTS WITH " + value((BoundLiteralPredicate<?>) pred);
+        case NOT_STARTS_WITH:
+          return term + " NOT STARTS WITH " + value((BoundLiteralPredicate<?>) pred);
+        default:
+          throw new UnsupportedOperationException(
+              "Cannot sanitize unsupported predicate type: " + pred.op());
+      }
     }
 
     @Override
@@ -344,7 +500,7 @@ public class ExpressionUtil {
     }
   }
 
-  private static <T> List<String> abbreviateValues(List<String> sanitizedValues) {
+  private static List<String> abbreviateValues(List<String> sanitizedValues) {
     if (sanitizedValues.size() >= LONG_IN_PREDICATE_ABBREVIATION_THRESHOLD) {
       Set<String> distinctValues = ImmutableSet.copyOf(sanitizedValues);
       if (distinctValues.size()
@@ -353,12 +509,52 @@ public class ExpressionUtil {
         abbreviatedList.addAll(distinctValues);
         abbreviatedList.add(
             String.format(
+                Locale.ROOT,
                 "... (%d values hidden, %d in total)",
-                sanitizedValues.size() - distinctValues.size(), sanitizedValues.size()));
+                sanitizedValues.size() - distinctValues.size(),
+                sanitizedValues.size()));
         return abbreviatedList;
       }
     }
     return sanitizedValues;
+  }
+
+  private static String sanitize(Type type, Literal<?> lit, long now, int today) {
+    return sanitize(type, lit.value(), now, today);
+  }
+
+  private static String sanitize(Type type, Object value, long now, int today) {
+    switch (type.typeId()) {
+      case INTEGER:
+      case LONG:
+        return sanitizeNumber((Number) value, "int");
+      case FLOAT:
+      case DOUBLE:
+        return sanitizeNumber((Number) value, "float");
+      case DATE:
+        return sanitizeDate((int) value, today);
+      case TIME:
+        return "(time)";
+      case TIMESTAMP:
+        return sanitizeTimestamp((long) value, now);
+      case TIMESTAMP_NANO:
+        return sanitizeTimestamp(DateTimeUtil.nanosToMicros((long) value / 1000), now);
+      case STRING:
+        return sanitizeString((CharSequence) value, now, today);
+      case VARIANT:
+        return sanitizeVariant((Variant) value, now, today);
+      case UNKNOWN:
+        return "(unknown)";
+      case BOOLEAN:
+      case UUID:
+      case DECIMAL:
+      case FIXED:
+      case BINARY:
+        // for boolean, uuid, decimal, fixed, unknown, and binary, match the string result
+        return sanitizeSimpleString(value.toString());
+    }
+    throw new UnsupportedOperationException(
+        String.format("Cannot sanitize value for unsupported type %s: %s", type, value));
   }
 
   private static String sanitize(Literal<?> literal, long now, int today) {
@@ -368,6 +564,9 @@ public class ExpressionUtil {
       return sanitizeDate(((Literals.DateLiteral) literal).value(), today);
     } else if (literal instanceof Literals.TimestampLiteral) {
       return sanitizeTimestamp(((Literals.TimestampLiteral) literal).value(), now);
+    } else if (literal instanceof Literals.TimestampNanoLiteral) {
+      return sanitizeTimestamp(
+          DateTimeUtil.nanosToMicros(((Literals.TimestampNanoLiteral) literal).value()), now);
     } else if (literal instanceof Literals.TimeLiteral) {
       return "(time)";
     } else if (literal instanceof Literals.IntegerLiteral) {
@@ -378,8 +577,10 @@ public class ExpressionUtil {
       return sanitizeNumber(((Literals.FloatLiteral) literal).value(), "float");
     } else if (literal instanceof Literals.DoubleLiteral) {
       return sanitizeNumber(((Literals.DoubleLiteral) literal).value(), "float");
+    } else if (literal instanceof Literals.VariantLiteral) {
+      return sanitizeVariant(((Literals.VariantLiteral) literal).value(), now, today);
     } else {
-      // for uuid, decimal, fixed, and binary, match the string result
+      // for uuid, decimal, fixed and binary, match the string result
       return sanitizeSimpleString(literal.value().toString());
     }
   }
@@ -426,6 +627,12 @@ public class ExpressionUtil {
       if (DATE.matcher(value).matches()) {
         Literal<Integer> date = Literal.of(value).to(Types.DateType.get());
         return sanitizeDate(date.value(), today);
+      } else if (TIMESTAMPNS.matcher(value).matches()) {
+        Literal<Long> ts = Literal.of(value).to(Types.TimestampNanoType.withoutZone());
+        return sanitizeTimestamp(DateTimeUtil.nanosToMicros(ts.value()), now);
+      } else if (TIMESTAMPTZNS.matcher(value).matches()) {
+        Literal<Long> ts = Literal.of(value).to(Types.TimestampNanoType.withZone());
+        return sanitizeTimestamp(DateTimeUtil.nanosToMicros(ts.value()), now);
       } else if (TIMESTAMP.matcher(value).matches()) {
         Literal<Long> ts = Literal.of(value).to(Types.TimestampType.withoutZone());
         return sanitizeTimestamp(ts.value(), now);
@@ -447,7 +654,86 @@ public class ExpressionUtil {
 
   private static String sanitizeSimpleString(CharSequence value) {
     // hash the value and return the hash as hex
-    return String.format("(hash-%08x)", HASH_FUNC.apply(value));
+    return String.format(Locale.ROOT, "(hash-%08x)", HASH_FUNC.apply(value));
+  }
+
+  private static String sanitizeVariant(Variant value, long now, int today) {
+    return sanitizeVariant(value.value(), now, today);
+  }
+
+  private static String sanitizeVariant(VariantValue value, long now, int today) {
+    if (value instanceof VariantObject) {
+      return sanitizeVariantObject(value.asObject(), now, today);
+    } else if (value instanceof VariantPrimitive) {
+      return sanitizeVariantValue(value.asPrimitive(), value.type(), now, today);
+    } else {
+      return sanitizeVariantArray(value.asArray(), now, today);
+    }
+  }
+
+  private static String sanitizeVariantObject(VariantObject value, long now, int today) {
+    return StreamSupport.stream(value.fieldNames().spliterator(), false)
+        .map(
+            field -> {
+              VariantValue fieldValue = value.get(field);
+              PhysicalType fieldType = fieldValue.type();
+              return String.format(
+                  Locale.ROOT,
+                  "(hash-%s): %s",
+                  field,
+                  sanitizeVariantValue(fieldValue, fieldType, now, today));
+            })
+        .collect(Collectors.joining(", ", "{", "}"));
+  }
+
+  private static String sanitizeVariantArray(VariantArray value, long now, int today) {
+    return IntStream.range(0, value.numElements())
+        .mapToObj(
+            i -> {
+              VariantValue element = value.get(i);
+              return sanitizeVariantValue(element, element.type(), now, today);
+            })
+        .collect(Collectors.joining(", ", "[", "]"));
+  }
+
+  private static String sanitizeVariantValue(
+      VariantValue fieldValue, PhysicalType fieldType, long now, int today) {
+    StringBuilder builder = new StringBuilder();
+    switch (fieldType) {
+      case INT8:
+      case INT16:
+      case INT32:
+      case INT64:
+      case FLOAT:
+      case DOUBLE:
+      case DECIMAL4:
+      case DECIMAL8:
+      case DECIMAL16:
+        builder.append(sanitizeNumber((Number) fieldValue.asPrimitive().get(), fieldType.name()));
+        break;
+      case DATE:
+        builder.append(sanitizeDate(((Number) fieldValue.asPrimitive().get()).intValue(), today));
+        break;
+      case TIMESTAMPTZ:
+      case TIMESTAMPNTZ:
+      case TIMESTAMPTZ_NANOS:
+      case TIMESTAMPNTZ_NANOS:
+        builder.append(
+            sanitizeTimestamp(((Number) fieldValue.asPrimitive().get()).longValue(), now));
+        break;
+      case TIME:
+        return "(time)";
+      case ARRAY:
+        builder.append(sanitizeVariantArray((VariantArray) fieldValue, now, today));
+        break;
+      case OBJECT:
+        builder.append(sanitizeVariantObject((VariantObject) fieldValue, now, today));
+        break;
+      default:
+        builder.append(sanitizeSimpleString(fieldValue.toString()));
+        break;
+    }
+    return builder.toString();
   }
 
   private static PartitionSpec identitySpec(Schema schema, int... ids) {

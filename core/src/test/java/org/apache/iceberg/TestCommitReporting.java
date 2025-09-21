@@ -20,22 +20,25 @@ package org.apache.iceberg;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.io.IOException;
-import org.apache.iceberg.TestScanPlanningAndReporting.TestMetricsReporter;
+import java.util.List;
+import org.apache.iceberg.ScanPlanningAndReportingTestBase.TestMetricsReporter;
 import org.apache.iceberg.metrics.CommitMetricsResult;
 import org.apache.iceberg.metrics.CommitReport;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
-import org.junit.Test;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 
-public class TestCommitReporting extends TableTestBase {
+@ExtendWith(ParameterizedTestExtension.class)
+public class TestCommitReporting extends TestBase {
 
   private final TestMetricsReporter reporter = new TestMetricsReporter();
 
-  public TestCommitReporting() {
-    super(2);
+  @Parameters(name = "formatVersion = {0}")
+  protected static List<Integer> formatVersions() {
+    return TestHelpers.V2_AND_ABOVE;
   }
 
-  @Test
+  @TestTemplate
   public void addAndDeleteDataFiles() {
     String tableName = "add-and-delete-data-files";
     Table table =
@@ -80,7 +83,7 @@ public class TestCommitReporting extends TableTestBase {
     assertThat(metrics.totalFilesSizeInBytes().value()).isEqualTo(0L);
   }
 
-  @Test
+  @TestTemplate
   public void addAndDeleteDeleteFiles() {
     String tableName = "add-and-delete-delete-files";
     Table table =
@@ -90,14 +93,16 @@ public class TestCommitReporting extends TableTestBase {
     // 2 positional + 1 equality
     table
         .newRowDelta()
-        .addDeletes(FILE_A_DELETES)
-        .addDeletes(FILE_B_DELETES)
+        .addDeletes(fileADeletes())
+        .addDeletes(fileBDeletes())
         .addDeletes(FILE_C2_DELETES)
         .commit();
 
+    long totalDeleteContentSize = contentSize(fileADeletes(), fileBDeletes(), FILE_C2_DELETES);
+
     CommitReport report = reporter.lastCommitReport();
     assertThat(report).isNotNull();
-    assertThat(report.operation()).isEqualTo("overwrite");
+    assertThat(report.operation()).isEqualTo("delete");
     assertThat(report.snapshotId()).isEqualTo(1L);
     assertThat(report.sequenceNumber()).isEqualTo(1L);
     assertThat(report.tableName()).isEqualTo(tableName);
@@ -105,7 +110,13 @@ public class TestCommitReporting extends TableTestBase {
     CommitMetricsResult metrics = report.commitMetrics();
     assertThat(metrics.addedDeleteFiles().value()).isEqualTo(3L);
     assertThat(metrics.totalDeleteFiles().value()).isEqualTo(3L);
-    assertThat(metrics.addedPositionalDeleteFiles().value()).isEqualTo(2L);
+    if (formatVersion == 2) {
+      assertThat(metrics.addedPositionalDeleteFiles().value()).isEqualTo(2L);
+      assertThat(metrics.addedDVs()).isNull();
+    } else {
+      assertThat(metrics.addedPositionalDeleteFiles()).isNull();
+      assertThat(metrics.addedDVs().value()).isEqualTo(2L);
+    }
     assertThat(metrics.addedEqualityDeleteFiles().value()).isEqualTo(1L);
 
     assertThat(metrics.addedPositionalDeletes().value()).isEqualTo(2L);
@@ -114,15 +125,15 @@ public class TestCommitReporting extends TableTestBase {
     assertThat(metrics.addedEqualityDeletes().value()).isEqualTo(1L);
     assertThat(metrics.totalEqualityDeletes().value()).isEqualTo(1L);
 
-    assertThat(metrics.addedFilesSizeInBytes().value()).isEqualTo(30L);
-    assertThat(metrics.totalFilesSizeInBytes().value()).isEqualTo(30L);
+    assertThat(metrics.addedFilesSizeInBytes().value()).isEqualTo(totalDeleteContentSize);
+    assertThat(metrics.totalFilesSizeInBytes().value()).isEqualTo(totalDeleteContentSize);
 
     // now remove those 2 positional + 1 equality delete files
     table
         .newRewrite()
         .rewriteFiles(
             ImmutableSet.of(),
-            ImmutableSet.of(FILE_A_DELETES, FILE_B_DELETES, FILE_C2_DELETES),
+            ImmutableSet.of(fileADeletes(), fileBDeletes(), FILE_C2_DELETES),
             ImmutableSet.of(),
             ImmutableSet.of())
         .commit();
@@ -137,7 +148,13 @@ public class TestCommitReporting extends TableTestBase {
     metrics = report.commitMetrics();
     assertThat(metrics.removedDeleteFiles().value()).isEqualTo(3L);
     assertThat(metrics.totalDeleteFiles().value()).isEqualTo(0L);
-    assertThat(metrics.removedPositionalDeleteFiles().value()).isEqualTo(2L);
+    if (formatVersion == 2) {
+      assertThat(metrics.removedPositionalDeleteFiles().value()).isEqualTo(2L);
+      assertThat(metrics.removedDVs()).isNull();
+    } else {
+      assertThat(metrics.removedPositionalDeleteFiles()).isNull();
+      assertThat(metrics.removedDVs().value()).isEqualTo(2L);
+    }
     assertThat(metrics.removedEqualityDeleteFiles().value()).isEqualTo(1L);
 
     assertThat(metrics.removedPositionalDeletes().value()).isEqualTo(2L);
@@ -146,45 +163,36 @@ public class TestCommitReporting extends TableTestBase {
     assertThat(metrics.removedEqualityDeletes().value()).isEqualTo(1L);
     assertThat(metrics.totalEqualityDeletes().value()).isEqualTo(0L);
 
-    assertThat(metrics.removedFilesSizeInBytes().value()).isEqualTo(30L);
+    assertThat(metrics.removedFilesSizeInBytes().value()).isEqualTo(totalDeleteContentSize);
     assertThat(metrics.totalFilesSizeInBytes().value()).isEqualTo(0L);
   }
 
-  @Test
-  public void addAndDeleteManifests() throws IOException {
+  @TestTemplate
+  public void addAndDeleteManifests() {
     String tableName = "add-and-delete-manifests";
     Table table =
         TestTables.create(
             tableDir, tableName, SCHEMA, SPEC, SortOrder.unsorted(), formatVersion, reporter);
 
     table.newAppend().appendFile(FILE_A).commit();
-    Snapshot snap1 = table.currentSnapshot();
     table.newAppend().appendFile(FILE_B).commit();
-    Snapshot snap2 = table.currentSnapshot();
 
-    ManifestFile newManifest =
-        writeManifest(
-            "manifest-file.avro",
-            manifestEntry(ManifestEntry.Status.EXISTING, snap1.snapshotId(), FILE_A),
-            manifestEntry(ManifestEntry.Status.EXISTING, snap2.snapshotId(), FILE_B));
-
-    RewriteManifests rewriteManifests = table.rewriteManifests();
-    for (ManifestFile manifest : snap2.dataManifests(table.io())) {
-      rewriteManifests.deleteManifest(manifest);
-    }
-
-    rewriteManifests.addManifest(newManifest).commit();
+    table.rewriteManifests().clusterBy(file -> "file").rewriteIf(ignored -> true).commit();
 
     CommitReport report = reporter.lastCommitReport();
     assertThat(report).isNotNull();
-    assertThat(report.operation()).isEqualTo("append");
-    assertThat(report.snapshotId()).isEqualTo(2L);
-    assertThat(report.sequenceNumber()).isEqualTo(2L);
+    assertThat(report.operation()).isEqualTo("replace");
+    assertThat(report.snapshotId()).isEqualTo(3L);
+    assertThat(report.sequenceNumber()).isEqualTo(3L);
     assertThat(report.tableName()).isEqualTo(tableName);
 
     CommitMetricsResult metrics = report.commitMetrics();
-    assertThat(metrics.addedDataFiles().value()).isEqualTo(1L);
-    assertThat(metrics.addedRecords().value()).isEqualTo(1L);
-    assertThat(metrics.addedFilesSizeInBytes().value()).isEqualTo(10L);
+    assertThat(metrics.totalDataFiles().value()).isEqualTo(2L);
+    assertThat(metrics.totalRecords().value()).isEqualTo(2L);
+    assertThat(metrics.totalFilesSizeInBytes().value()).isEqualTo(20L);
+    assertThat(metrics.manifestsCreated().value()).isEqualTo(1L);
+    assertThat(metrics.manifestsKept().value()).isEqualTo(0L);
+    assertThat(metrics.manifestsReplaced().value()).isEqualTo(2L);
+    assertThat(metrics.manifestEntriesProcessed().value()).isEqualTo(2L);
   }
 }

@@ -24,12 +24,12 @@ import java.util.Comparator;
 import java.util.Set;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.StructLike;
-import org.apache.iceberg.encryption.EncryptedOutputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.types.Comparators;
 import org.apache.iceberg.types.Types.StructType;
 import org.apache.iceberg.util.StructLikeSet;
+import org.apache.iceberg.util.StructLikeUtil;
 
 /**
  * A writer capable of writing to multiple specs and partitions that requires the incoming records
@@ -82,7 +82,7 @@ abstract class ClusteredWriter<T, R> implements PartitioningWriter<T, R> {
       this.partitionComparator = Comparators.forType(partitionType);
       this.completedPartitions = StructLikeSet.create(partitionType);
       // copy the partition key as the key object may be reused
-      this.currentPartition = StructCopy.copy(partition);
+      this.currentPartition = StructLikeUtil.copy(partition);
       this.currentWriter = newWriter(currentSpec, currentPartition);
 
     } else if (partition != currentPartition
@@ -97,7 +97,7 @@ abstract class ClusteredWriter<T, R> implements PartitioningWriter<T, R> {
       }
 
       // copy the partition key as the key object may be reused
-      this.currentPartition = StructCopy.copy(partition);
+      this.currentPartition = StructLikeUtil.copy(partition);
       this.currentWriter = newWriter(currentSpec, currentPartition);
     }
 
@@ -130,19 +130,5 @@ abstract class ClusteredWriter<T, R> implements PartitioningWriter<T, R> {
   public final R result() {
     Preconditions.checkState(closed, "Cannot get result from unclosed writer");
     return aggregatedResult();
-  }
-
-  /** @deprecated will be removed in 1.5.0 */
-  @Deprecated
-  protected EncryptedOutputFile newOutputFile(
-      OutputFileFactory fileFactory, PartitionSpec spec, StructLike partition) {
-    Preconditions.checkArgument(
-        spec.isUnpartitioned() || partition != null,
-        "Partition must not be null when creating output file for partitioned spec");
-    if (spec.isUnpartitioned() || partition == null) {
-      return fileFactory.newOutputFile();
-    } else {
-      return fileFactory.newOutputFile(spec, partition);
-    }
   }
 }

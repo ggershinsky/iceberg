@@ -34,11 +34,63 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Type;
+import org.apache.iceberg.types.TypeUtil;
 import org.apache.iceberg.types.Types;
 
 public class MetricsUtil {
 
   private MetricsUtil() {}
+
+  /**
+   * Copies a metrics object without value, NULL and NaN counts for given fields.
+   *
+   * @param excludedFieldIds field IDs for which the counts must be dropped
+   * @return a new metrics object without counts for given fields
+   */
+  public static Metrics copyWithoutFieldCounts(Metrics metrics, Set<Integer> excludedFieldIds) {
+    return new Metrics(
+        metrics.recordCount(),
+        metrics.columnSizes(),
+        copyWithoutKeys(metrics.valueCounts(), excludedFieldIds),
+        copyWithoutKeys(metrics.nullValueCounts(), excludedFieldIds),
+        copyWithoutKeys(metrics.nanValueCounts(), excludedFieldIds),
+        metrics.lowerBounds(),
+        metrics.upperBounds(),
+        metrics.originalTypes());
+  }
+
+  /**
+   * Copies a metrics object without counts and bounds for given fields.
+   *
+   * @param excludedFieldIds field IDs for which the counts and bounds must be dropped
+   * @return a new metrics object without lower and upper bounds for given fields
+   */
+  public static Metrics copyWithoutFieldCountsAndBounds(
+      Metrics metrics, Set<Integer> excludedFieldIds) {
+    return new Metrics(
+        metrics.recordCount(),
+        metrics.columnSizes(),
+        copyWithoutKeys(metrics.valueCounts(), excludedFieldIds),
+        copyWithoutKeys(metrics.nullValueCounts(), excludedFieldIds),
+        copyWithoutKeys(metrics.nanValueCounts(), excludedFieldIds),
+        copyWithoutKeys(metrics.lowerBounds(), excludedFieldIds),
+        copyWithoutKeys(metrics.upperBounds(), excludedFieldIds),
+        copyWithoutKeys(metrics.originalTypes(), excludedFieldIds));
+  }
+
+  private static <K, V> Map<K, V> copyWithoutKeys(Map<K, V> map, Set<K> keys) {
+    if (map == null) {
+      return null;
+    }
+
+    Map<K, V> filteredMap = Maps.newHashMap(map);
+
+    for (K key : keys) {
+      filteredMap.remove(key);
+    }
+
+    return filteredMap.isEmpty() ? null : filteredMap;
+  }
 
   /**
    * Construct mapping relationship between column id to NaN value counts from input metrics and
@@ -52,11 +104,25 @@ public class MetricsUtil {
       return Maps.newHashMap();
     }
 
+    Map<Integer, Integer> parents = TypeUtil.indexParents(inputSchema.asStruct());
+
     return fieldMetrics
+        .filter(metrics -> !inMapOrList(inputSchema, parents, metrics.id()))
         .filter(
             metrics ->
                 metricsMode(inputSchema, metricsConfig, metrics.id()) != MetricsModes.None.get())
         .collect(Collectors.toMap(FieldMetrics::id, FieldMetrics::nanValueCount));
+  }
+
+  private static boolean inMapOrList(Schema schema, Map<Integer, Integer> parents, int id) {
+    Integer current = id;
+    while ((current = parents.get(current)) != null) {
+      if (schema.findField(current).type().typeId() != Type.TypeID.STRUCT) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /** Extract MetricsMode for the given field id from metrics config. */
@@ -297,18 +363,21 @@ public class MetricsUtil {
         String colName = idToName.get(id);
 
         fields.add(
-            Types.NestedField.of(
-                nextId.incrementAndGet(),
-                true,
-                colName,
-                Types.StructType.of(
-                    READABLE_METRIC_COLS.stream()
-                        .map(
-                            m ->
-                                optional(
-                                    nextId.incrementAndGet(), m.name(), m.colType(field), m.doc()))
-                        .collect(Collectors.toList())),
-                String.format("Metrics for column %s", colName)));
+            Types.NestedField.optional(colName)
+                .withId(nextId.incrementAndGet())
+                .ofType(
+                    Types.StructType.of(
+                        READABLE_METRIC_COLS.stream()
+                            .map(
+                                m ->
+                                    optional(
+                                        nextId.incrementAndGet(),
+                                        m.name(),
+                                        m.colType(field),
+                                        m.doc()))
+                            .collect(Collectors.toList())))
+                .withDoc(String.format("Metrics for column %s", colName))
+                .build());
       }
     }
 

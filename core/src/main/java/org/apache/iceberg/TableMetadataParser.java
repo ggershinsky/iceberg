@@ -34,6 +34,7 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 import org.apache.iceberg.TableMetadata.MetadataLogEntry;
 import org.apache.iceberg.TableMetadata.SnapshotLogEntry;
+import org.apache.iceberg.encryption.EncryptedKey;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
@@ -109,6 +110,10 @@ public class TableMetadataParser {
   static final String METADATA_FILE = "metadata-file";
   static final String METADATA_LOG = "metadata-log";
   static final String STATISTICS = "statistics";
+  static final String PARTITION_STATISTICS = "partition-statistics";
+  static final String ENCRYPTION_KEYS = "encryption-keys";
+  static final String NEXT_ROW_ID = "next-row-id";
+  static final int MIN_NULL_CURRENT_SNAPSHOT_VERSION = 3;
 
   public static void overwrite(TableMetadata metadata, OutputFile outputFile) {
     internalWrite(metadata, outputFile, true);
@@ -125,11 +130,10 @@ public class TableMetadataParser {
     try (OutputStream ou = isGzip ? new GZIPOutputStream(stream) : stream;
         OutputStreamWriter writer = new OutputStreamWriter(ou, StandardCharsets.UTF_8)) {
       JsonGenerator generator = JsonUtil.factory().createGenerator(writer);
-      generator.useDefaultPrettyPrinter();
       toJson(metadata, generator);
       generator.flush();
     } catch (IOException e) {
-      throw new RuntimeIOException(e, "Failed to write json to file: %s", outputFile);
+      throw new RuntimeIOException(e, "Failed to write json to file: %s", outputFile.location());
     }
   }
 
@@ -213,9 +217,27 @@ public class TableMetadataParser {
     // write properties map
     JsonUtil.writeStringMap(PROPERTIES, metadata.properties(), generator);
 
-    generator.writeNumberField(
-        CURRENT_SNAPSHOT_ID,
-        metadata.currentSnapshot() != null ? metadata.currentSnapshot().snapshotId() : -1);
+    if (metadata.currentSnapshot() != null) {
+      generator.writeNumberField(CURRENT_SNAPSHOT_ID, metadata.currentSnapshot().snapshotId());
+    } else {
+      if (metadata.formatVersion() >= MIN_NULL_CURRENT_SNAPSHOT_VERSION) {
+        generator.writeNullField(CURRENT_SNAPSHOT_ID);
+      } else {
+        generator.writeNumberField(CURRENT_SNAPSHOT_ID, -1L);
+      }
+    }
+
+    if (metadata.formatVersion() >= 3) {
+      generator.writeNumberField(NEXT_ROW_ID, metadata.nextRowId());
+    }
+
+    if (metadata.encryptionKeys() != null && !metadata.encryptionKeys().isEmpty()) {
+      generator.writeArrayFieldStart(ENCRYPTION_KEYS);
+      for (EncryptedKey key : metadata.encryptionKeys()) {
+        EncryptedKeyParser.toJson(key, generator);
+      }
+      generator.writeEndArray();
+    }
 
     toJson(metadata.refs(), generator);
 
@@ -228,6 +250,12 @@ public class TableMetadataParser {
     generator.writeArrayFieldStart(STATISTICS);
     for (StatisticsFile statisticsFile : metadata.statisticsFiles()) {
       StatisticsFileParser.toJson(statisticsFile, generator);
+    }
+    generator.writeEndArray();
+
+    generator.writeArrayFieldStart(PARTITION_STATISTICS);
+    for (PartitionStatisticsFile partitionStatisticsFile : metadata.partitionStatisticsFiles()) {
+      PartitionStatisticsFileParser.toJson(partitionStatisticsFile, generator);
     }
     generator.writeEndArray();
 
@@ -263,16 +291,16 @@ public class TableMetadataParser {
   }
 
   public static TableMetadata read(FileIO io, String path) {
-    return read(io, io.newInputFile(path));
+    return read(io.newInputFile(path));
   }
 
-  public static TableMetadata read(FileIO io, InputFile file) {
+  public static TableMetadata read(InputFile file) {
     Codec codec = Codec.fromFileName(file.location());
     try (InputStream is =
         codec == Codec.GZIP ? new GZIPInputStream(file.newStream()) : file.newStream()) {
       return fromJson(file, JsonUtil.mapper().readValue(is, JsonNode.class));
     } catch (IOException e) {
-      throw new RuntimeIOException(e, "Failed to read file: %s", file);
+      throw new RuntimeIOException(e, "Failed to read file: %s", file.location());
     }
   }
 
@@ -299,7 +327,7 @@ public class TableMetadataParser {
     return JsonUtil.parse(json, node -> TableMetadataParser.fromJson(metadataLocation, node));
   }
 
-  static TableMetadata fromJson(InputFile file, JsonNode node) {
+  public static TableMetadata fromJson(InputFile file, JsonNode node) {
     return fromJson(file.location(), node);
   }
 
@@ -308,7 +336,7 @@ public class TableMetadataParser {
   }
 
   @SuppressWarnings({"checkstyle:CyclomaticComplexity", "checkstyle:MethodLength"})
-  static TableMetadata fromJson(String metadataLocation, JsonNode node) {
+  public static TableMetadata fromJson(String metadataLocation, JsonNode node) {
     Preconditions.checkArgument(
         node.isObject(), "Cannot parse metadata from a non-object: %s", node);
 
@@ -431,15 +459,40 @@ public class TableMetadataParser {
       defaultSortOrderId = defaultSortOrder.orderId();
     }
 
-    // parse properties map
-    Map<String, String> properties = JsonUtil.getStringMap(PROPERTIES, node);
-    long currentSnapshotId = JsonUtil.getLong(CURRENT_SNAPSHOT_ID, node);
+    Map<String, String> properties;
+    if (node.has(PROPERTIES)) {
+      // parse properties map
+      properties = JsonUtil.getStringMap(PROPERTIES, node);
+    } else {
+      properties = ImmutableMap.of();
+    }
+
+    Long currentSnapshotId = JsonUtil.getLongOrNull(CURRENT_SNAPSHOT_ID, node);
+    if (currentSnapshotId == null) {
+      // This field is optional, but internally we set this to -1 when not set
+      currentSnapshotId = -1L;
+    }
+
+    long lastRowId;
+    if (formatVersion >= 3) {
+      lastRowId = JsonUtil.getLong(NEXT_ROW_ID, node);
+    } else {
+      lastRowId = TableMetadata.INITIAL_ROW_ID;
+    }
+
     long lastUpdatedMillis = JsonUtil.getLong(LAST_UPDATED_MILLIS, node);
+
+    List<EncryptedKey> keys;
+    if (node.has(ENCRYPTION_KEYS)) {
+      keys = JsonUtil.getObjectList(ENCRYPTION_KEYS, node, EncryptedKeyParser::fromJson);
+    } else {
+      keys = List.of();
+    }
 
     Map<String, SnapshotRef> refs;
     if (node.has(REFS)) {
       refs = refsFromJson(node.get(REFS));
-    } else if (currentSnapshotId != -1) {
+    } else if (currentSnapshotId != -1L) {
       // initialize the main branch if there are no refs
       refs =
           ImmutableMap.of(
@@ -448,14 +501,19 @@ public class TableMetadataParser {
       refs = ImmutableMap.of();
     }
 
-    JsonNode snapshotArray = JsonUtil.get(SNAPSHOTS, node);
-    Preconditions.checkArgument(
-        snapshotArray.isArray(), "Cannot parse snapshots from non-array: %s", snapshotArray);
+    List<Snapshot> snapshots;
+    if (node.has(SNAPSHOTS)) {
+      JsonNode snapshotArray = JsonUtil.get(SNAPSHOTS, node);
+      Preconditions.checkArgument(
+          snapshotArray.isArray(), "Cannot parse snapshots from non-array: %s", snapshotArray);
 
-    List<Snapshot> snapshots = Lists.newArrayListWithExpectedSize(snapshotArray.size());
-    Iterator<JsonNode> iterator = snapshotArray.elements();
-    while (iterator.hasNext()) {
-      snapshots.add(SnapshotParser.fromJson(iterator.next()));
+      snapshots = Lists.newArrayListWithExpectedSize(snapshotArray.size());
+      Iterator<JsonNode> iterator = snapshotArray.elements();
+      while (iterator.hasNext()) {
+        snapshots.add(SnapshotParser.fromJson(iterator.next()));
+      }
+    } else {
+      snapshots = ImmutableList.of();
     }
 
     List<StatisticsFile> statisticsFiles;
@@ -463,6 +521,13 @@ public class TableMetadataParser {
       statisticsFiles = statisticsFilesFromJson(node.get(STATISTICS));
     } else {
       statisticsFiles = ImmutableList.of();
+    }
+
+    List<PartitionStatisticsFile> partitionStatisticsFiles;
+    if (node.has(PARTITION_STATISTICS)) {
+      partitionStatisticsFiles = partitionStatsFilesFromJson(node.get(PARTITION_STATISTICS));
+    } else {
+      partitionStatisticsFiles = ImmutableList.of();
     }
 
     ImmutableList.Builder<HistoryEntry> entries = ImmutableList.builder();
@@ -512,6 +577,9 @@ public class TableMetadataParser {
         metadataEntries.build(),
         refs,
         statisticsFiles,
+        partitionStatisticsFiles,
+        lastRowId,
+        keys,
         ImmutableList.of() /* no changes from the file */);
   }
 
@@ -544,5 +612,19 @@ public class TableMetadataParser {
     }
 
     return statisticsFilesBuilder.build();
+  }
+
+  private static List<PartitionStatisticsFile> partitionStatsFilesFromJson(JsonNode filesList) {
+    Preconditions.checkArgument(
+        filesList.isArray(),
+        "Cannot parse partition statistics files from non-array: %s",
+        filesList);
+
+    ImmutableList.Builder<PartitionStatisticsFile> statsFileBuilder = ImmutableList.builder();
+    for (JsonNode partitionStatsFile : filesList) {
+      statsFileBuilder.add(PartitionStatisticsFileParser.fromJson(partitionStatsFile));
+    }
+
+    return statsFileBuilder.build();
   }
 }

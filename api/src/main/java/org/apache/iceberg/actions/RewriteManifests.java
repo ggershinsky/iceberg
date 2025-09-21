@@ -18,12 +18,11 @@
  */
 package org.apache.iceberg.actions;
 
+import java.util.List;
 import java.util.function.Predicate;
 import org.apache.iceberg.ManifestFile;
-import org.immutables.value.Value;
 
 /** An action that rewrites manifests. */
-@Value.Enclosing
 public interface RewriteManifests
     extends SnapshotUpdate<RewriteManifests, RewriteManifests.Result> {
   /**
@@ -47,6 +46,31 @@ public interface RewriteManifests
   RewriteManifests rewriteIf(Predicate<ManifestFile> predicate);
 
   /**
+   * Rewrite manifests in a given order, based on partition field names
+   *
+   * <p>Supply an optional set of partition field names to sort the rewritten manifests by. Choosing
+   * a frequently queried partition field can reduce planning time by skipping unnecessary
+   * manifests.
+   *
+   * <p>For example, given a table PARTITIONED BY (a, b, c, d), one may wish to rewrite and sort
+   * manifests by ('d', 'b') only, based on known query patterns. Rewriting Manifests in this way
+   * will yield a manifest_list whose manifest_files point to data files containing common 'd' then
+   * 'b' partition values.
+   *
+   * <p>If not set, manifests will be rewritten in the order of the transforms in the table's
+   * partition spec.
+   *
+   * @param partitionFields Exact transformed column names used for partitioning; not the raw column
+   *     names that partitions are derived from. E.G. supply 'data_bucket' and not 'data' for a
+   *     bucket(N, data) partition * definition
+   * @return this for method chaining
+   */
+  default RewriteManifests sortBy(List<String> partitionFields) {
+    throw new UnsupportedOperationException(
+        this.getClass().getName() + " doesn't implement sortBy(List<String>)");
+  }
+
+  /**
    * Passes a location where the staged manifests should be written.
    *
    * <p>If not set, defaults to the table's metadata location.
@@ -57,7 +81,6 @@ public interface RewriteManifests
   RewriteManifests stagingLocation(String stagingLocation);
 
   /** The action result that contains a summary of the execution. */
-  @Value.Immutable
   interface Result {
     /** Returns rewritten manifests. */
     Iterable<ManifestFile> rewrittenManifests();

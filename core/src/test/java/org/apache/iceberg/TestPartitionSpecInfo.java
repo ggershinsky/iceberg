@@ -18,126 +18,135 @@
  */
 package org.apache.iceberg;
 
+import static org.apache.iceberg.TestHelpers.ALL_VERSIONS;
 import static org.apache.iceberg.types.Types.NestedField.required;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
+import static org.assertj.core.api.Assertions.entry;
 
 import java.io.File;
-import java.io.IOException;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import java.util.List;
 import org.apache.iceberg.types.Types;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 
-@RunWith(Parameterized.class)
+@ExtendWith(ParameterizedTestExtension.class)
 public class TestPartitionSpecInfo {
 
-  @Rule public TemporaryFolder temp = new TemporaryFolder();
+  @TempDir private File tableDir;
+
   private final Schema schema =
       new Schema(
           required(1, "id", Types.IntegerType.get()), required(2, "data", Types.StringType.get()));
-  private File tableDir = null;
 
-  @Parameterized.Parameters(name = "formatVersion = {0}")
-  public static Object[] parameters() {
-    return new Object[] {1, 2};
+  @Parameters(name = "formatVersion = {0}")
+  protected static List<Integer> formatVersions() {
+    return ALL_VERSIONS;
   }
 
-  private final int formatVersion;
+  @Parameter private int formatVersion;
 
-  public TestPartitionSpecInfo(int formatVersion) {
-    this.formatVersion = formatVersion;
-  }
-
-  @Before
-  public void setupTableDir() throws IOException {
-    this.tableDir = temp.newFolder();
-  }
-
-  @After
+  @AfterEach
   public void cleanupTables() {
     TestTables.clearTables();
   }
 
-  @Test
+  @TestTemplate
   public void testSpecIsUnpartitionedForVoidTranforms() {
     PartitionSpec spec =
         PartitionSpec.builderFor(schema).alwaysNull("id").alwaysNull("data").build();
 
-    Assert.assertTrue(spec.isUnpartitioned());
+    assertThat(spec.isUnpartitioned()).isTrue();
   }
 
-  @Test
+  @TestTemplate
   public void testSpecInfoUnpartitionedTable() {
     PartitionSpec spec = PartitionSpec.unpartitioned();
     TestTables.TestTable table = TestTables.create(tableDir, "test", schema, spec, formatVersion);
 
-    Assert.assertTrue(spec.isUnpartitioned());
-    Assert.assertEquals(spec, table.spec());
-    Assert.assertEquals(spec.lastAssignedFieldId(), table.spec().lastAssignedFieldId());
-    Assert.assertEquals(ImmutableMap.of(spec.specId(), spec), table.specs());
-    Assert.assertNull(table.specs().get(Integer.MAX_VALUE));
+    assertThat(spec.isUnpartitioned()).isTrue();
+    assertThat(table.spec()).isEqualTo(spec);
+    assertThat(table.spec().lastAssignedFieldId()).isEqualTo(spec.lastAssignedFieldId());
+    assertThat(table.specs())
+        .containsExactly(entry(spec.specId(), spec))
+        .doesNotContainKey(Integer.MAX_VALUE);
   }
 
-  @Test
+  @TestTemplate
   public void testSpecInfoPartitionedTable() {
     PartitionSpec spec = PartitionSpec.builderFor(schema).identity("data").build();
     TestTables.TestTable table = TestTables.create(tableDir, "test", schema, spec, formatVersion);
 
-    Assert.assertEquals(spec, table.spec());
-    Assert.assertEquals(spec.lastAssignedFieldId(), table.spec().lastAssignedFieldId());
-    Assert.assertEquals(ImmutableMap.of(spec.specId(), spec), table.specs());
-    Assert.assertNull(table.specs().get(Integer.MAX_VALUE));
+    assertThat(table.spec()).isEqualTo(spec);
+    assertThat(table.spec().lastAssignedFieldId()).isEqualTo(spec.lastAssignedFieldId());
+    assertThat(table.specs())
+        .containsExactly(entry(spec.specId(), spec))
+        .doesNotContainKey(Integer.MAX_VALUE);
   }
 
-  @Test
+  @TestTemplate
+  public void testSpecInfoPartitionedTableCaseInsensitive() {
+    PartitionSpec spec =
+        PartitionSpec.builderFor(schema).caseSensitive(false).identity("DATA").build();
+    TestTables.TestTable table = TestTables.create(tableDir, "test", schema, spec, formatVersion);
+
+    assertThat(table.spec()).isEqualTo(spec);
+    assertThat(table.spec().lastAssignedFieldId()).isEqualTo(spec.lastAssignedFieldId());
+    assertThat(table.specs())
+        .containsExactly(entry(spec.specId(), spec))
+        .doesNotContainKey(Integer.MAX_VALUE);
+  }
+
+  @TestTemplate
+  public void testSpecInfoPartitionedTableCaseSensitiveFails() {
+    assertThatIllegalArgumentException()
+        .isThrownBy(
+            () -> {
+              PartitionSpec.builderFor(schema).caseSensitive(true).identity("DATA").build();
+            })
+        .withMessage("Cannot find source column: DATA");
+  }
+
+  @TestTemplate
   public void testColumnDropWithPartitionSpecEvolution() {
     PartitionSpec spec = PartitionSpec.builderFor(schema).identity("id").build();
     TestTables.TestTable table = TestTables.create(tableDir, "test", schema, spec, formatVersion);
 
-    Assert.assertEquals(spec, table.spec());
+    assertThat(table.spec()).isEqualTo(spec);
 
     TableMetadata base = TestTables.readMetadata("test");
     PartitionSpec newSpec =
         PartitionSpec.builderFor(table.schema()).identity("data").withSpecId(1).build();
     table.ops().commit(base, base.updatePartitionSpec(newSpec));
 
-    int initialColSize = table.schema().columns().size();
     table.updateSchema().deleteColumn("id").commit();
 
     final Schema expectedSchema = new Schema(required(2, "data", Types.StringType.get()));
 
-    Assert.assertEquals(newSpec, table.spec());
-    Assert.assertEquals(newSpec, table.specs().get(newSpec.specId()));
-    Assert.assertEquals(spec, table.specs().get(spec.specId()));
-    Assert.assertEquals(
-        ImmutableMap.of(spec.specId(), spec, newSpec.specId(), newSpec), table.specs());
-    Assert.assertNull(table.specs().get(Integer.MAX_VALUE));
-    Assert.assertTrue(
-        "Schema must have only \"data\" column", table.schema().sameSchema(expectedSchema));
+    assertThat(table.spec()).isEqualTo(newSpec);
+    assertThat(table.specs())
+        .containsExactly(entry(spec.specId(), spec), entry(newSpec.specId(), newSpec))
+        .doesNotContainKey(Integer.MAX_VALUE);
+    assertThat(table.schema().asStruct()).isEqualTo(expectedSchema.asStruct());
   }
 
-  @Test
+  @TestTemplate
   public void testSpecInfoPartitionSpecEvolutionForV1Table() {
     PartitionSpec spec = PartitionSpec.builderFor(schema).bucket("data", 4).build();
     TestTables.TestTable table = TestTables.create(tableDir, "test", schema, spec, formatVersion);
 
-    Assert.assertEquals(spec, table.spec());
+    assertThat(table.spec()).isEqualTo(spec);
 
     TableMetadata base = TestTables.readMetadata("test");
     PartitionSpec newSpec =
         PartitionSpec.builderFor(table.schema()).bucket("data", 10).withSpecId(1).build();
     table.ops().commit(base, base.updatePartitionSpec(newSpec));
 
-    Assert.assertEquals(newSpec, table.spec());
-    Assert.assertEquals(newSpec, table.specs().get(newSpec.specId()));
-    Assert.assertEquals(spec, table.specs().get(spec.specId()));
-    Assert.assertEquals(
-        ImmutableMap.of(spec.specId(), spec, newSpec.specId(), newSpec), table.specs());
-    Assert.assertNull(table.specs().get(Integer.MAX_VALUE));
+    assertThat(table.spec()).isEqualTo(newSpec);
+    assertThat(table.specs())
+        .containsExactly(entry(spec.specId(), spec), entry(newSpec.specId(), newSpec))
+        .doesNotContainKey(Integer.MAX_VALUE);
   }
 }

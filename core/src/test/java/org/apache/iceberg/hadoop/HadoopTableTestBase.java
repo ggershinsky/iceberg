@@ -43,14 +43,12 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
-import org.apache.iceberg.TestTables;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.io.Files;
 import org.apache.iceberg.types.Types;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.io.TempDir;
 
 public class HadoopTableTestBase {
   // Schema passed to create tables
@@ -105,27 +103,17 @@ public class HadoopTableTestBase {
           .withPartitionPath("data_bucket=2") // easy way to set partition data for now
           .withRecordCount(2) // needs at least one record or else metrics will filter it out
           .build();
-  static final DataFile FILE_D =
-      DataFiles.builder(SPEC)
-          .withPath("/path/to/data-a.parquet")
-          .withFileSizeInBytes(0)
-          .withPartitionPath("data_bucket=3") // easy way to set partition data for now
-          .withRecordCount(2) // needs at least one record or else metrics will filter it out
-          .build();
 
-  @Rule public TemporaryFolder temp = new TemporaryFolder();
+  @TempDir File tempDir;
+  @TempDir File tableDir;
 
-  File tableDir = null;
   String tableLocation = null;
   File metadataDir = null;
   File versionHintFile = null;
   Table table = null;
 
-  @Before
+  @BeforeEach
   public void setupTable() throws Exception {
-    this.tableDir = temp.newFolder();
-    tableDir.delete(); // created by table create
-
     this.tableLocation = tableDir.toURI().toString();
     this.metadataDir = new File(tableDir, "metadata");
     this.versionHintFile = new File(metadataDir, "version-hint.text");
@@ -151,18 +139,18 @@ public class HadoopTableTestBase {
   }
 
   TableMetadata readMetadataVersion(int version) {
-    return TableMetadataParser.read(
-        new TestTables.TestTableOperations("table", tableDir).io(), localInput(version(version)));
+    return TableMetadataParser.read(localInput(version(version)));
   }
 
   int readVersionHint() throws IOException {
-    return Integer.parseInt(Files.readFirstLine(versionHintFile, StandardCharsets.UTF_8));
+    return Integer.parseInt(
+        Files.asCharSource(versionHintFile, StandardCharsets.UTF_8).readFirstLine());
   }
 
   void replaceVersionHint(int version) throws IOException {
     // remove the checksum that will no longer match
     new File(metadataDir, ".version-hint.text.crc").delete();
-    Files.write(String.valueOf(version), versionHintFile, StandardCharsets.UTF_8);
+    Files.asCharSink(versionHintFile, StandardCharsets.UTF_8).write(String.valueOf(version));
   }
 
   /*
@@ -197,7 +185,7 @@ public class HadoopTableTestBase {
         "hadoop",
         ImmutableMap.<String, String>builder()
             .putAll(catalogProperties)
-            .put(CatalogProperties.WAREHOUSE_LOCATION, temp.newFolder().getAbsolutePath())
+            .put(CatalogProperties.WAREHOUSE_LOCATION, tempDir.getAbsolutePath())
             .buildOrThrow());
     return hadoopCatalog;
   }

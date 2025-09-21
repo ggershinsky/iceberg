@@ -27,6 +27,9 @@ public class OAuth2Properties {
   /** A credential to exchange for a token in the OAuth2 client credentials flow. */
   public static final String CREDENTIAL = "credential";
 
+  /** Token endpoint URI to fetch token from if the Rest Catalog is not the authorization server. */
+  public static final String OAUTH2_SERVER_URI = "oauth2-server-uri";
+
   /**
    * Interval in milliseconds to wait before attempting to exchange the configured catalog Bearer
    * token. By default, token exchange will be attempted after 1 hour.
@@ -43,8 +46,23 @@ public class OAuth2Properties {
 
   public static final boolean TOKEN_REFRESH_ENABLED_DEFAULT = true;
 
+  /**
+   * Some IDPs do not support token exchange which is the first approach used for acquiring a new
+   * token. Disabling this will allow fallback to the client credential flow without initiating a
+   * token exchange flow.
+   */
+  public static final String TOKEN_EXCHANGE_ENABLED = "token-exchange-enabled";
+
+  public static final boolean TOKEN_EXCHANGE_ENABLED_DEFAULT = true;
+
   /** Additional scope for OAuth2. */
   public static final String SCOPE = "scope";
+
+  /** Optional param audience for OAuth2. */
+  public static final String AUDIENCE = "audience";
+
+  /** Optional param resource for OAuth2. */
+  public static final String RESOURCE = "resource";
 
   /** Scope for OAuth2 flows. */
   public static final String CATALOG_SCOPE = "catalog";

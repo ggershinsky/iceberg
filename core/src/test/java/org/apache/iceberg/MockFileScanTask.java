@@ -44,6 +44,17 @@ public class MockFileScanTask extends BaseFileScanTask {
     this.length = file.fileSizeInBytes();
   }
 
+  public MockFileScanTask(DataFile file, Schema schema, PartitionSpec spec) {
+    super(file, null, SchemaParser.toJson(schema), PartitionSpecParser.toJson(spec), null);
+    this.length = file.fileSizeInBytes();
+  }
+
+  public MockFileScanTask(
+      DataFile file, DeleteFile[] deleteFiles, Schema schema, PartitionSpec spec) {
+    super(file, deleteFiles, SchemaParser.toJson(schema), PartitionSpecParser.toJson(spec), null);
+    this.length = file.fileSizeInBytes();
+  }
+
   public static MockFileScanTask mockTask(long length, int sortOrderId) {
     DataFile mockFile = Mockito.mock(DataFile.class);
     Mockito.when(mockFile.fileSizeInBytes()).thenReturn(length);
@@ -60,6 +71,22 @@ public class MockFileScanTask extends BaseFileScanTask {
     DataFile mockFile = Mockito.mock(DataFile.class);
     Mockito.when(mockFile.fileSizeInBytes()).thenReturn(length);
     return new MockFileScanTask(mockFile, mockDeletes);
+  }
+
+  public static MockFileScanTask mockTaskWithFileScopedDeleteRecords(
+      long length, long recordCount, int numDeleteFiles, long deletedRecords) {
+    DeleteFile[] mockDeletes = new DeleteFile[numDeleteFiles];
+    for (int i = 0; i < numDeleteFiles; i++) {
+      DeleteFile deleteFile = Mockito.mock(DeleteFile.class);
+      Mockito.when(deleteFile.recordCount()).thenReturn(deletedRecords);
+      Mockito.when(deleteFile.referencedDataFile()).thenReturn("random data file");
+      mockDeletes[i] = deleteFile;
+    }
+
+    DataFile dataFile = Mockito.mock(DataFile.class);
+    Mockito.when(dataFile.fileSizeInBytes()).thenReturn(length);
+    Mockito.when(dataFile.recordCount()).thenReturn(recordCount);
+    return new MockFileScanTask(dataFile, mockDeletes);
   }
 
   @Override

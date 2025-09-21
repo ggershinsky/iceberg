@@ -18,12 +18,18 @@
  */
 package org.apache.iceberg.spark;
 
+import java.time.Duration;
+
 public class SparkSQLProperties {
 
   private SparkSQLProperties() {}
 
   // Controls whether vectorized reads are enabled
   public static final String VECTORIZATION_ENABLED = "spark.sql.iceberg.vectorization.enabled";
+
+  // Controls which Parquet reader implementation to use
+  public static final String PARQUET_READER_TYPE = "spark.sql.iceberg.parquet.reader-type";
+  public static final ParquetReaderType PARQUET_READER_TYPE_DEFAULT = ParquetReaderType.ICEBERG;
 
   // Controls whether reading/writing timestamps without timezones is allowed
   @Deprecated
@@ -63,4 +69,45 @@ public class SparkSQLProperties {
   // Controls the WAP branch used for write-audit-publish workflow.
   // When set, new snapshots will be committed to this branch.
   public static final String WAP_BRANCH = "spark.wap.branch";
+
+  // Controls write compress options
+  public static final String COMPRESSION_CODEC = "spark.sql.iceberg.compression-codec";
+  public static final String COMPRESSION_LEVEL = "spark.sql.iceberg.compression-level";
+  public static final String COMPRESSION_STRATEGY = "spark.sql.iceberg.compression-strategy";
+
+  // Overrides the data planning mode
+  public static final String DATA_PLANNING_MODE = "spark.sql.iceberg.data-planning-mode";
+
+  // Overrides the delete planning mode
+  public static final String DELETE_PLANNING_MODE = "spark.sql.iceberg.delete-planning-mode";
+
+  // Controls whether to report locality information to Spark while allocating input partitions
+  public static final String LOCALITY = "spark.sql.iceberg.locality.enabled";
+
+  public static final String EXECUTOR_CACHE_ENABLED = "spark.sql.iceberg.executor-cache.enabled";
+  public static final boolean EXECUTOR_CACHE_ENABLED_DEFAULT = true;
+
+  // Controls whether to enable executor cache for delete files
+  public static final String EXECUTOR_CACHE_DELETE_FILES_ENABLED =
+      "spark.sql.iceberg.executor-cache.delete-files.enabled";
+  public static final boolean EXECUTOR_CACHE_DELETE_FILES_ENABLED_DEFAULT = true;
+
+  public static final String EXECUTOR_CACHE_TIMEOUT = "spark.sql.iceberg.executor-cache.timeout";
+  public static final Duration EXECUTOR_CACHE_TIMEOUT_DEFAULT = Duration.ofMinutes(10);
+
+  public static final String EXECUTOR_CACHE_MAX_ENTRY_SIZE =
+      "spark.sql.iceberg.executor-cache.max-entry-size";
+  public static final long EXECUTOR_CACHE_MAX_ENTRY_SIZE_DEFAULT = 64 * 1024 * 1024; // 64 MB
+
+  public static final String EXECUTOR_CACHE_MAX_TOTAL_SIZE =
+      "spark.sql.iceberg.executor-cache.max-total-size";
+  public static final long EXECUTOR_CACHE_MAX_TOTAL_SIZE_DEFAULT = 128 * 1024 * 1024; // 128 MB
+
+  public static final String EXECUTOR_CACHE_LOCALITY_ENABLED =
+      "spark.sql.iceberg.executor-cache.locality.enabled";
+  public static final boolean EXECUTOR_CACHE_LOCALITY_ENABLED_DEFAULT = false;
+
+  // Controls whether to report available column statistics to Spark for query optimization.
+  public static final String REPORT_COLUMN_STATS = "spark.sql.iceberg.report-column-stats";
+  public static final boolean REPORT_COLUMN_STATS_DEFAULT = true;
 }

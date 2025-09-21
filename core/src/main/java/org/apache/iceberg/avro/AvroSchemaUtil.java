@@ -19,8 +19,10 @@
 package org.apache.iceberg.avro;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiFunction;
 import org.apache.avro.JsonProperties;
 import org.apache.avro.LogicalType;
 import org.apache.avro.LogicalTypes;
@@ -59,7 +61,7 @@ public class AvroSchemaUtil {
 
   public static Schema convert(
       org.apache.iceberg.Schema schema, Map<Types.StructType, String> names) {
-    return TypeUtil.visit(schema, new TypeToSchema(names));
+    return TypeUtil.visit(schema, new TypeToSchema.WithTypeToName(names));
   }
 
   public static Schema convert(Type type) {
@@ -71,7 +73,12 @@ public class AvroSchemaUtil {
   }
 
   public static Schema convert(Type type, Map<Types.StructType, String> names) {
-    return TypeUtil.visit(type, new TypeToSchema(names));
+    return TypeUtil.visit(type, new TypeToSchema.WithTypeToName(names));
+  }
+
+  public static Schema convert(
+      Type type, BiFunction<Integer, Types.StructType, String> namesFunction) {
+    return TypeUtil.visit(type, new TypeToSchema.WithNamesFunction(namesFunction));
   }
 
   public static Type convert(Schema schema) {
@@ -111,11 +118,21 @@ public class AvroSchemaUtil {
   }
 
   public static Map<Type, Schema> convertTypes(Types.StructType type, String name) {
-    TypeToSchema converter = new TypeToSchema(ImmutableMap.of(type, name));
+    TypeToSchema.WithTypeToName converter =
+        new TypeToSchema.WithTypeToName(ImmutableMap.of(type, name));
     TypeUtil.visit(type, converter);
     return ImmutableMap.copyOf(converter.getConversionMap());
   }
 
+  public static Schema pruneColumns(Schema schema, Set<Integer> selectedIds) {
+    return new PruneColumns(selectedIds, null).rootSchema(schema);
+  }
+
+  /**
+   * @deprecated will be removed in 2.0.0; use applyNameMapping and pruneColumns(Schema, Set)
+   *     instead.
+   */
+  @Deprecated
   public static Schema pruneColumns(
       Schema schema, Set<Integer> selectedIds, NameMapping nameMapping) {
     return new PruneColumns(selectedIds, nameMapping).rootSchema(schema);
@@ -126,10 +143,19 @@ public class AvroSchemaUtil {
     return AvroCustomOrderSchemaVisitor.visit(schema, new BuildAvroProjection(expected, renames));
   }
 
+  public static Schema applyNameMapping(Schema fileSchema, NameMapping nameMapping) {
+    if (nameMapping != null) {
+      return AvroSchemaVisitor.visit(fileSchema, new ApplyNameMapping(nameMapping));
+    }
+
+    return fileSchema;
+  }
+
   public static boolean isTimestamptz(Schema schema) {
     LogicalType logicalType = schema.getLogicalType();
     if (logicalType instanceof LogicalTypes.TimestampMillis
-        || logicalType instanceof LogicalTypes.TimestampMicros) {
+        || logicalType instanceof LogicalTypes.TimestampMicros
+        || logicalType instanceof LogicalTypes.TimestampNanos) {
       // timestamptz is adjusted to UTC
       Object value = schema.getObjectProp(ADJUST_TO_UTC_PROP);
 
@@ -147,6 +173,10 @@ public class AvroSchemaUtil {
     return false;
   }
 
+  public static boolean isOptional(Schema schema) {
+    return isOptionSchema(schema) || schema.getType() == Schema.Type.NULL;
+  }
+
   public static boolean isOptionSchema(Schema schema) {
     if (schema.getType() == UNION && schema.getTypes().size() == 2) {
       if (schema.getTypes().get(0).getType() == Schema.Type.NULL) {
@@ -159,12 +189,15 @@ public class AvroSchemaUtil {
   }
 
   static Schema toOption(Schema schema) {
-    if (schema.getType() == UNION) {
-      Preconditions.checkArgument(
-          isOptionSchema(schema), "Union schemas are not supported: %s", schema);
-      return schema;
-    } else {
-      return Schema.createUnion(NULL, schema);
+    switch (schema.getType()) {
+      case UNION:
+        Preconditions.checkArgument(
+            isOptionSchema(schema), "Union schemas are not supported: %s", schema);
+        return schema;
+      case NULL:
+        return schema;
+      default:
+        return Schema.createUnion(NULL, schema);
     }
   }
 
@@ -194,10 +227,24 @@ public class AvroSchemaUtil {
     return schema.getType() == RECORD && schema.getFields().size() == 2;
   }
 
+  static boolean isVariantSchema(Schema schema) {
+    if (schema.getType() != Schema.Type.RECORD || schema.getFields().size() != 2) {
+      return false;
+    }
+
+    Schema.Field metadataField = schema.getField("metadata");
+    Schema.Field valueField = schema.getField("value");
+
+    return metadataField != null
+        && metadataField.schema().getType() == Schema.Type.BYTES
+        && valueField != null
+        && valueField.schema().getType() == Schema.Type.BYTES;
+  }
+
   static Schema createMap(int keyId, Schema keySchema, int valueId, Schema valueSchema) {
     String keyValueName = "k" + keyId + "_v" + valueId;
 
-    Schema.Field keyField = new Schema.Field("key", keySchema, null, (Object) null);
+    Schema.Field keyField = new Schema.Field("key", keySchema, null, null);
     keyField.addProp(FIELD_ID_PROP, keyId);
 
     Schema.Field valueField =
@@ -225,7 +272,7 @@ public class AvroSchemaUtil {
       Schema valueSchema) {
     String keyValueName = "k" + keyId + "_v" + valueId;
 
-    Schema.Field keyField = new Schema.Field("key", keySchema, null, (Object) null);
+    Schema.Field keyField = new Schema.Field("key", keySchema, null, null);
     if (!"key".equals(keyName)) {
       keyField.addAlias(keyName);
     }
@@ -290,6 +337,15 @@ public class AvroSchemaUtil {
     return getId(schema, KEY_ID_PROP);
   }
 
+  static Integer keyId(Schema mapSchema) {
+    Object idObj = mapSchema.getObjectProp(KEY_ID_PROP);
+    if (idObj != null) {
+      return toInt(idObj);
+    }
+
+    return null;
+  }
+
   static Integer getKeyId(
       Schema schema, NameMapping nameMapping, Iterable<String> parentFieldNames) {
     Preconditions.checkArgument(
@@ -303,6 +359,15 @@ public class AvroSchemaUtil {
     Preconditions.checkArgument(
         schema.getType() == MAP, "Cannot get map value id for non-map schema: %s", schema);
     return getId(schema, VALUE_ID_PROP);
+  }
+
+  static Integer valueId(Schema mapSchema) {
+    Object idObj = mapSchema.getObjectProp(VALUE_ID_PROP);
+    if (idObj != null) {
+      return toInt(idObj);
+    }
+
+    return null;
   }
 
   static Integer getValueId(
@@ -320,6 +385,15 @@ public class AvroSchemaUtil {
     return getId(schema, ELEMENT_ID_PROP);
   }
 
+  static Integer elementId(Schema arraySchema) {
+    Object idObj = arraySchema.getObjectProp(ELEMENT_ID_PROP);
+    if (idObj != null) {
+      return toInt(idObj);
+    }
+
+    return null;
+  }
+
   static Integer getElementId(
       Schema schema, NameMapping nameMapping, Iterable<String> parentFieldNames) {
     Preconditions.checkArgument(
@@ -335,15 +409,17 @@ public class AvroSchemaUtil {
     return id;
   }
 
+  static Integer fieldId(Schema.Field field) {
+    return getFieldId(field, null, null);
+  }
+
   static Integer getFieldId(
       Schema.Field field, NameMapping nameMapping, Iterable<String> parentFieldNames) {
     Object id = field.getObjectProp(FIELD_ID_PROP);
     if (id != null) {
       return toInt(id);
     } else if (nameMapping != null) {
-      List<String> names = Lists.newArrayList(parentFieldNames);
-      names.add(field.name());
-      MappedField mappedField = nameMapping.find(names);
+      MappedField mappedField = nameMapping.find(parentFieldNames, field.name());
       if (mappedField != null) {
         return mappedField.id();
       }
@@ -475,6 +551,6 @@ public class AvroSchemaUtil {
     if (Character.isDigit(character)) {
       return "_" + character;
     }
-    return "_x" + Integer.toHexString(character).toUpperCase();
+    return "_x" + Integer.toHexString(character).toUpperCase(Locale.ROOT);
   }
 }

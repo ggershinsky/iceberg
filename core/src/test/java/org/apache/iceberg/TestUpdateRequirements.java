@@ -25,25 +25,35 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.types.Types;
+import org.apache.iceberg.view.ImmutableViewVersion;
+import org.apache.iceberg.view.ViewMetadata;
 import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 public class TestUpdateRequirements {
   private final TableMetadata metadata = mock(TableMetadata.class);
   private final TableMetadata updated = mock(TableMetadata.class);
+  private final ViewMetadata viewMetadata = mock(ViewMetadata.class);
+  private final ViewMetadata updatedViewMetadata = mock(ViewMetadata.class);
 
   @BeforeEach
   public void before() {
     String uuid = UUID.randomUUID().toString();
     when(metadata.uuid()).thenReturn(uuid);
     when(updated.uuid()).thenReturn(uuid);
+    when(viewMetadata.uuid()).thenReturn(uuid);
+    when(updatedViewMetadata.uuid()).thenReturn(uuid);
   }
 
   @Test
@@ -67,6 +77,14 @@ public class TestUpdateRequirements {
     assertThatThrownBy(() -> UpdateRequirements.forReplaceTable(metadata, null))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Invalid metadata updates: null");
+
+    assertThatThrownBy(() -> UpdateRequirements.forReplaceView(null, null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("Invalid view metadata: null");
+
+    assertThatThrownBy(() -> UpdateRequirements.forReplaceView(viewMetadata, null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessage("Invalid metadata updates: null");
   }
 
   @Test
@@ -85,6 +103,13 @@ public class TestUpdateRequirements {
     assertThat(UpdateRequirements.forUpdateTable(metadata, ImmutableList.of()))
         .hasSize(1)
         .hasOnlyElementsOfType(UpdateRequirement.AssertTableUUID.class);
+  }
+
+  @Test
+  public void emptyUpdatesForReplaceView() {
+    assertThat(UpdateRequirements.forReplaceView(viewMetadata, ImmutableList.of()))
+        .hasSize(1)
+        .hasOnlyElementsOfType(UpdateRequirement.AssertViewUUID.class);
   }
 
   @Test
@@ -130,10 +155,44 @@ public class TestUpdateRequirements {
   }
 
   @Test
-  public void upgradeFormatVersion() {
+  public void assignUUIDToView() {
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forReplaceView(
+            viewMetadata,
+            ImmutableList.of(
+                new MetadataUpdate.AssignUUID(viewMetadata.uuid()),
+                new MetadataUpdate.AssignUUID(UUID.randomUUID().toString()),
+                new MetadataUpdate.AssignUUID(UUID.randomUUID().toString())));
+    requirements.forEach(req -> req.validate(viewMetadata));
+
+    assertThat(requirements)
+        .hasSize(1)
+        .hasOnlyElementsOfType(UpdateRequirement.AssertViewUUID.class);
+
+    assertViewUUID(requirements);
+  }
+
+  @Test
+  public void assignUUIDToViewFailure() {
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forReplaceView(
+            viewMetadata, ImmutableList.of(new MetadataUpdate.AssignUUID(viewMetadata.uuid())));
+
+    when(updatedViewMetadata.uuid()).thenReturn(UUID.randomUUID().toString());
+    assertThatThrownBy(() -> requirements.forEach(req -> req.validate(updatedViewMetadata)))
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage(
+            String.format(
+                "Requirement failed: view UUID does not match: expected %s != %s",
+                updatedViewMetadata.uuid(), viewMetadata.uuid()));
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = {2, 3})
+  public void upgradeFormatVersion(int formatVersion) {
     List<UpdateRequirement> requirements =
         UpdateRequirements.forUpdateTable(
-            metadata, ImmutableList.of(new MetadataUpdate.UpgradeFormatVersion(2)));
+            metadata, ImmutableList.of(new MetadataUpdate.UpgradeFormatVersion(formatVersion)));
     requirements.forEach(req -> req.validate(metadata));
 
     assertThat(requirements)
@@ -144,6 +203,20 @@ public class TestUpdateRequirements {
   }
 
   @Test
+  public void upgradeFormatVersionForView() {
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forReplaceView(
+            viewMetadata, ImmutableList.of(new MetadataUpdate.UpgradeFormatVersion(2)));
+    requirements.forEach(req -> req.validate(viewMetadata));
+
+    assertThat(requirements)
+        .hasSize(1)
+        .hasOnlyElementsOfType(UpdateRequirement.AssertViewUUID.class);
+
+    assertViewUUID(requirements);
+  }
+
+  @Test
   public void addSchema() {
     int lastColumnId = 1;
     when(metadata.lastColumnId()).thenReturn(lastColumnId);
@@ -151,9 +224,9 @@ public class TestUpdateRequirements {
         UpdateRequirements.forUpdateTable(
             metadata,
             ImmutableList.of(
-                new MetadataUpdate.AddSchema(new Schema(), lastColumnId),
-                new MetadataUpdate.AddSchema(new Schema(), lastColumnId + 1),
-                new MetadataUpdate.AddSchema(new Schema(), lastColumnId + 2)));
+                new MetadataUpdate.AddSchema(new Schema()),
+                new MetadataUpdate.AddSchema(new Schema()),
+                new MetadataUpdate.AddSchema(new Schema())));
     requirements.forEach(req -> req.validate(metadata));
 
     assertThat(requirements)
@@ -181,13 +254,31 @@ public class TestUpdateRequirements {
         UpdateRequirements.forUpdateTable(
             metadata,
             ImmutableList.of(
-                new MetadataUpdate.AddSchema(new Schema(), 1),
-                new MetadataUpdate.AddSchema(new Schema(), 2),
-                new MetadataUpdate.AddSchema(new Schema(), 3)));
+                new MetadataUpdate.AddSchema(new Schema()),
+                new MetadataUpdate.AddSchema(new Schema()),
+                new MetadataUpdate.AddSchema(new Schema())));
 
     assertThatThrownBy(() -> requirements.forEach(req -> req.validate(updated)))
         .isInstanceOf(CommitFailedException.class)
         .hasMessage("Requirement failed: last assigned field id changed: expected id 2 != 3");
+  }
+
+  @Test
+  public void addSchemaForView() {
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forReplaceView(
+            viewMetadata,
+            ImmutableList.of(
+                new MetadataUpdate.AddSchema(new Schema()),
+                new MetadataUpdate.AddSchema(new Schema()),
+                new MetadataUpdate.AddSchema(new Schema())));
+    requirements.forEach(req -> req.validate(viewMetadata));
+
+    assertThat(requirements)
+        .hasSize(1)
+        .hasOnlyElementsOfTypes(UpdateRequirement.AssertViewUUID.class);
+
+    assertViewUUID(requirements);
   }
 
   @Test
@@ -210,11 +301,7 @@ public class TestUpdateRequirements {
 
     assertTableUUID(requirements);
 
-    assertThat(requirements)
-        .element(1)
-        .asInstanceOf(InstanceOfAssertFactories.type(UpdateRequirement.AssertCurrentSchemaID.class))
-        .extracting(UpdateRequirement.AssertCurrentSchemaID::schemaId)
-        .isEqualTo(schemaId);
+    assertCurrentSchemaId(requirements, 1, schemaId);
   }
 
   @Test
@@ -308,11 +395,7 @@ public class TestUpdateRequirements {
 
     assertTableUUID(requirements);
 
-    assertThat(requirements)
-        .element(1)
-        .asInstanceOf(InstanceOfAssertFactories.type(UpdateRequirement.AssertDefaultSpecID.class))
-        .extracting(UpdateRequirement.AssertDefaultSpecID::specId)
-        .isEqualTo(specId);
+    assertDefaultSpecId(requirements, 1, specId);
   }
 
   @Test
@@ -331,6 +414,197 @@ public class TestUpdateRequirements {
     assertThatThrownBy(() -> requirements.forEach(req -> req.validate(updated)))
         .isInstanceOf(CommitFailedException.class)
         .hasMessage("Requirement failed: default partition spec changed: expected id 0 != 1");
+  }
+
+  @Test
+  public void removePartitionSpec() {
+    int defaultSpecId = 3;
+    when(metadata.defaultSpecId()).thenReturn(defaultSpecId);
+
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata,
+            ImmutableList.of(new MetadataUpdate.RemovePartitionSpecs(Sets.newHashSet(1, 2))));
+    requirements.forEach(req -> req.validate(metadata));
+
+    assertThat(requirements)
+        .hasSize(2)
+        .hasOnlyElementsOfTypes(
+            UpdateRequirement.AssertTableUUID.class, UpdateRequirement.AssertDefaultSpecID.class);
+
+    assertTableUUID(requirements);
+
+    assertDefaultSpecId(requirements, 1, defaultSpecId);
+  }
+
+  @Test
+  public void testRemovePartitionSpecsWithBranch() {
+    int defaultSpecId = 3;
+    long snapshotId = 42L;
+    when(metadata.defaultSpecId()).thenReturn(defaultSpecId);
+
+    mockBranch("branch", snapshotId);
+
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata,
+            ImmutableList.of(new MetadataUpdate.RemovePartitionSpecs(Sets.newHashSet(1, 2))));
+    requirements.forEach(req -> req.validate(metadata));
+
+    assertThat(requirements)
+        .hasSize(3)
+        .hasOnlyElementsOfTypes(
+            UpdateRequirement.AssertTableUUID.class,
+            UpdateRequirement.AssertDefaultSpecID.class,
+            UpdateRequirement.AssertRefSnapshotID.class);
+
+    assertTableUUID(requirements);
+
+    assertDefaultSpecId(requirements, 1, defaultSpecId);
+
+    assertRefSnapshotId(requirements, 2, snapshotId);
+  }
+
+  @Test
+  public void testRemovePartitionSpecsWithSpecChangedFailure() {
+    int defaultSpecId = 3;
+    when(metadata.defaultSpecId()).thenReturn(defaultSpecId);
+    when(updated.defaultSpecId()).thenReturn(defaultSpecId + 1);
+
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata,
+            ImmutableList.of(new MetadataUpdate.RemovePartitionSpecs(Sets.newHashSet(1, 2))));
+
+    assertThatThrownBy(() -> requirements.forEach(req -> req.validate(updated)))
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage(
+            "Requirement failed: default partition spec changed: expected id %s != %s",
+            defaultSpecId, defaultSpecId + 1);
+  }
+
+  @Test
+  public void testRemovePartitionSpecsWithBranchChangedFailure() {
+    int defaultSpecId = 3;
+    when(metadata.defaultSpecId()).thenReturn(defaultSpecId);
+    when(updated.defaultSpecId()).thenReturn(defaultSpecId);
+
+    long snapshotId = 42L;
+    String branch = "test";
+    mockBranchChanged(branch, snapshotId);
+
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata,
+            ImmutableList.of(new MetadataUpdate.RemovePartitionSpecs(Sets.newHashSet(1, 2))));
+
+    assertThatThrownBy(() -> requirements.forEach(req -> req.validate(updated)))
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage(
+            "Requirement failed: branch %s has changed: expected id %s != %s",
+            branch, snapshotId, snapshotId + 1);
+  }
+
+  private void mockBranchChanged(String branch, long snapshotId) {
+    mockBranch(branch, snapshotId);
+
+    SnapshotRef updatedRef = mock(SnapshotRef.class);
+    when(updatedRef.snapshotId()).thenReturn(snapshotId + 1);
+    when(updatedRef.isBranch()).thenReturn(true);
+    when(updated.ref(branch)).thenReturn(updatedRef);
+  }
+
+  private void mockBranch(String branch, long snapshotId) {
+    SnapshotRef snapshotRef = mock(SnapshotRef.class);
+    when(snapshotRef.snapshotId()).thenReturn(snapshotId);
+    when(snapshotRef.isBranch()).thenReturn(true);
+    when(metadata.refs()).thenReturn(ImmutableMap.of(branch, snapshotRef));
+    when(metadata.ref(branch)).thenReturn(snapshotRef);
+  }
+
+  @Test
+  public void removeSchemas() {
+    int currentSchemaId = 3;
+    when(metadata.currentSchemaId()).thenReturn(currentSchemaId);
+
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata, ImmutableList.of(new MetadataUpdate.RemoveSchemas(Sets.newHashSet(1, 2))));
+    requirements.forEach(req -> req.validate(metadata));
+
+    assertThat(requirements)
+        .hasSize(2)
+        .hasOnlyElementsOfTypes(
+            UpdateRequirement.AssertTableUUID.class, UpdateRequirement.AssertCurrentSchemaID.class);
+
+    assertTableUUID(requirements);
+
+    assertCurrentSchemaId(requirements, 1, currentSchemaId);
+  }
+
+  @Test
+  public void testRemoveSchemasWithBranch() {
+    int currentSchemaId = 3;
+    long snapshotId = 42L;
+    when(metadata.currentSchemaId()).thenReturn(currentSchemaId);
+
+    mockBranch("branch", snapshotId);
+
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata, ImmutableList.of(new MetadataUpdate.RemoveSchemas(Sets.newHashSet(1, 2))));
+    requirements.forEach(req -> req.validate(metadata));
+
+    assertThat(requirements)
+        .hasSize(3)
+        .hasOnlyElementsOfTypes(
+            UpdateRequirement.AssertTableUUID.class,
+            UpdateRequirement.AssertCurrentSchemaID.class,
+            UpdateRequirement.AssertRefSnapshotID.class);
+
+    assertTableUUID(requirements);
+
+    assertCurrentSchemaId(requirements, 1, currentSchemaId);
+
+    assertRefSnapshotId(requirements, 2, snapshotId);
+  }
+
+  @Test
+  public void testRemoveSchemasWithSchemaChangedFailure() {
+    int currentSchemaId = 3;
+    when(metadata.currentSchemaId()).thenReturn(currentSchemaId);
+    when(updated.currentSchemaId()).thenReturn(currentSchemaId + 1);
+
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata, ImmutableList.of(new MetadataUpdate.RemoveSchemas(Sets.newHashSet(1, 2))));
+
+    assertThatThrownBy(() -> requirements.forEach(req -> req.validate(updated)))
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage(
+            "Requirement failed: current schema changed: expected id %s != %s",
+            currentSchemaId, currentSchemaId + 1);
+  }
+
+  @Test
+  public void testRemoveSchemasWithBranchChangedFailure() {
+    int currentSchemaId = 3;
+    when(metadata.currentSchemaId()).thenReturn(currentSchemaId);
+    when(updated.currentSchemaId()).thenReturn(currentSchemaId);
+
+    long snapshotId = 42L;
+    String branch = "test";
+    mockBranchChanged(branch, snapshotId);
+
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata, ImmutableList.of(new MetadataUpdate.RemoveSchemas(Sets.newHashSet(1, 2))));
+
+    assertThatThrownBy(() -> requirements.forEach(req -> req.validate(updated)))
+        .isInstanceOf(CommitFailedException.class)
+        .hasMessage(
+            "Requirement failed: branch %s has changed: expected id %s != %s",
+            branch, snapshotId, snapshotId + 1);
   }
 
   @Test
@@ -394,7 +668,7 @@ public class TestUpdateRequirements {
     List<UpdateRequirement> requirements =
         UpdateRequirements.forUpdateTable(
             metadata,
-            ImmutableList.of(new MetadataUpdate.SetStatistics(0L, mock(StatisticsFile.class))));
+            ImmutableList.of(new MetadataUpdate.SetStatistics(mock(StatisticsFile.class))));
     requirements.forEach(req -> req.validate(metadata));
 
     assertThat(requirements)
@@ -430,7 +704,31 @@ public class TestUpdateRequirements {
 
     requirements =
         UpdateRequirements.forUpdateTable(
-            metadata, ImmutableList.of(new MetadataUpdate.RemoveSnapshot(0L)));
+            metadata, ImmutableList.of(new MetadataUpdate.RemoveSnapshots(0L)));
+
+    assertThat(requirements)
+        .hasSize(1)
+        .hasOnlyElementsOfTypes(UpdateRequirement.AssertTableUUID.class);
+
+    assertTableUUID(requirements);
+  }
+
+  @Test
+  public void addAndRemoveSnapshots() {
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata, ImmutableList.of(new MetadataUpdate.AddSnapshot(mock(Snapshot.class))));
+    requirements.forEach(req -> req.validate(metadata));
+
+    assertThat(requirements)
+        .hasSize(1)
+        .hasOnlyElementsOfTypes(UpdateRequirement.AssertTableUUID.class);
+
+    assertTableUUID(requirements);
+
+    requirements =
+        UpdateRequirements.forUpdateTable(
+            metadata, ImmutableList.of(new MetadataUpdate.RemoveSnapshots(Set.of(0L))));
 
     assertThat(requirements)
         .hasSize(1)
@@ -473,7 +771,7 @@ public class TestUpdateRequirements {
 
     requirements =
         UpdateRequirements.forUpdateTable(
-            metadata, ImmutableList.of(new MetadataUpdate.RemoveSnapshot(0L)));
+            metadata, ImmutableList.of(new MetadataUpdate.RemoveSnapshots(Set.of(0L))));
     requirements.forEach(req -> req.validate(metadata));
 
     assertThat(requirements)
@@ -554,6 +852,33 @@ public class TestUpdateRequirements {
   }
 
   @Test
+  public void setAndRemovePropertiesForView() {
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forReplaceView(
+            viewMetadata,
+            ImmutableList.of(new MetadataUpdate.SetProperties(ImmutableMap.of("test", "test"))));
+    requirements.forEach(req -> req.validate(viewMetadata));
+
+    assertThat(requirements)
+        .hasSize(1)
+        .hasOnlyElementsOfTypes(UpdateRequirement.AssertViewUUID.class);
+
+    assertViewUUID(requirements);
+
+    requirements =
+        UpdateRequirements.forReplaceView(
+            viewMetadata,
+            ImmutableList.of(new MetadataUpdate.RemoveProperties(Sets.newHashSet("test"))));
+    requirements.forEach(req -> req.validate(viewMetadata));
+
+    assertThat(requirements)
+        .hasSize(1)
+        .hasOnlyElementsOfTypes(UpdateRequirement.AssertViewUUID.class);
+
+    assertViewUUID(requirements);
+  }
+
+  @Test
   public void setLocation() {
     List<UpdateRequirement> requirements =
         UpdateRequirements.forUpdateTable(
@@ -567,11 +892,132 @@ public class TestUpdateRequirements {
     assertTableUUID(requirements);
   }
 
+  @Test
+  public void setLocationForView() {
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forReplaceView(
+            viewMetadata, ImmutableList.of(new MetadataUpdate.SetLocation("location")));
+    requirements.forEach(req -> req.validate(viewMetadata));
+
+    assertThat(requirements)
+        .hasSize(1)
+        .hasOnlyElementsOfTypes(UpdateRequirement.AssertViewUUID.class);
+
+    assertViewUUID(requirements);
+  }
+
+  @Test
+  public void addViewVersion() {
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forReplaceView(
+            viewMetadata,
+            ImmutableList.of(
+                new MetadataUpdate.AddViewVersion(
+                    ImmutableViewVersion.builder()
+                        .versionId(1)
+                        .schemaId(1)
+                        .timestampMillis(System.currentTimeMillis())
+                        .defaultNamespace(Namespace.of("ns"))
+                        .build()),
+                new MetadataUpdate.AddViewVersion(
+                    ImmutableViewVersion.builder()
+                        .versionId(2)
+                        .schemaId(1)
+                        .timestampMillis(System.currentTimeMillis())
+                        .defaultNamespace(Namespace.of("ns"))
+                        .build()),
+                new MetadataUpdate.AddViewVersion(
+                    ImmutableViewVersion.builder()
+                        .versionId(3)
+                        .schemaId(1)
+                        .timestampMillis(System.currentTimeMillis())
+                        .defaultNamespace(Namespace.of("ns"))
+                        .build())));
+    requirements.forEach(req -> req.validate(viewMetadata));
+
+    assertThat(requirements)
+        .hasSize(1)
+        .hasOnlyElementsOfTypes(UpdateRequirement.AssertViewUUID.class);
+
+    assertViewUUID(requirements);
+  }
+
+  @Test
+  public void setCurrentViewVersion() {
+    List<UpdateRequirement> requirements =
+        UpdateRequirements.forReplaceView(
+            viewMetadata,
+            ImmutableList.of(
+                new MetadataUpdate.AddViewVersion(
+                    ImmutableViewVersion.builder()
+                        .versionId(3)
+                        .schemaId(1)
+                        .timestampMillis(System.currentTimeMillis())
+                        .defaultNamespace(Namespace.of("ns"))
+                        .build()),
+                new MetadataUpdate.AddViewVersion(
+                    ImmutableViewVersion.builder()
+                        .versionId(2)
+                        .schemaId(1)
+                        .timestampMillis(System.currentTimeMillis())
+                        .defaultNamespace(Namespace.of("ns"))
+                        .build()),
+                new MetadataUpdate.AddViewVersion(
+                    ImmutableViewVersion.builder()
+                        .versionId(1)
+                        .schemaId(1)
+                        .timestampMillis(System.currentTimeMillis())
+                        .defaultNamespace(Namespace.of("ns"))
+                        .build()),
+                new MetadataUpdate.SetCurrentViewVersion(2)));
+    requirements.forEach(req -> req.validate(viewMetadata));
+
+    assertThat(requirements)
+        .hasSize(1)
+        .hasOnlyElementsOfTypes(UpdateRequirement.AssertViewUUID.class);
+
+    assertViewUUID(requirements);
+  }
+
   private void assertTableUUID(List<UpdateRequirement> requirements) {
     assertThat(requirements)
         .element(0)
         .asInstanceOf(InstanceOfAssertFactories.type(UpdateRequirement.AssertTableUUID.class))
         .extracting(UpdateRequirement.AssertTableUUID::uuid)
         .isEqualTo(metadata.uuid());
+  }
+
+  private void assertViewUUID(List<UpdateRequirement> requirements) {
+    assertThat(requirements)
+        .element(0)
+        .asInstanceOf(InstanceOfAssertFactories.type(UpdateRequirement.AssertViewUUID.class))
+        .extracting(UpdateRequirement.AssertViewUUID::uuid)
+        .isEqualTo(viewMetadata.uuid());
+  }
+
+  private void assertDefaultSpecId(
+      List<UpdateRequirement> requirements, int idx, int defaultSpecId) {
+    assertThat(requirements)
+        .element(idx)
+        .asInstanceOf(InstanceOfAssertFactories.type(UpdateRequirement.AssertDefaultSpecID.class))
+        .extracting(UpdateRequirement.AssertDefaultSpecID::specId)
+        .isEqualTo(defaultSpecId);
+  }
+
+  private void assertCurrentSchemaId(
+      List<UpdateRequirement> requirements, int idx, int currentSchemaId) {
+    assertThat(requirements)
+        .element(idx)
+        .asInstanceOf(InstanceOfAssertFactories.type(UpdateRequirement.AssertCurrentSchemaID.class))
+        .extracting(UpdateRequirement.AssertCurrentSchemaID::schemaId)
+        .isEqualTo(currentSchemaId);
+  }
+
+  private void assertRefSnapshotId(List<UpdateRequirement> requirements, int idx, long snapshotId) {
+    assertThat(requirements)
+        .element(idx)
+        .asInstanceOf(InstanceOfAssertFactories.type(UpdateRequirement.AssertRefSnapshotID.class))
+        .extracting(UpdateRequirement.AssertRefSnapshotID::snapshotId)
+        .isEqualTo(snapshotId);
   }
 }

@@ -18,40 +18,34 @@
  */
 package org.apache.iceberg;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.util.Arrays;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Types;
-import org.junit.Assert;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 
-@RunWith(Parameterized.class)
-public class TestFindFiles extends TableTestBase {
-  @Parameterized.Parameters(name = "formatVersion = {0}")
-  public static Object[] parameters() {
-    return new Object[] {1, 2};
-  }
+@ExtendWith(ParameterizedTestExtension.class)
+public class TestFindFiles extends TestBase {
 
-  public TestFindFiles(int formatVersion) {
-    super(formatVersion);
-  }
-
-  @Test
+  @TestTemplate
   public void testBasicBehavior() {
     table.newAppend().appendFile(FILE_A).appendFile(FILE_B).commit();
 
     Iterable<DataFile> files = FindFiles.in(table).collect();
 
-    Assert.assertEquals(pathSet(FILE_A, FILE_B), pathSet(files));
+    assertThat(pathSet(files)).isEqualTo(pathSet(FILE_A, FILE_B));
   }
 
-  @Test
+  @TestTemplate
   public void testWithMetadataMatching() {
     table
         .newAppend()
@@ -66,10 +60,10 @@ public class TestFindFiles extends TableTestBase {
             .withMetadataMatching(Expressions.startsWith("file_path", "/path/to/data-a"))
             .collect();
 
-    Assert.assertEquals(pathSet(FILE_A), pathSet(files));
+    assertThat(pathSet(files)).isEqualTo(pathSet(FILE_A));
   }
 
-  @Test
+  @TestTemplate
   public void testWithRecordsMatching() {
     table
         .newAppend()
@@ -96,10 +90,10 @@ public class TestFindFiles extends TableTestBase {
     final Iterable<DataFile> files =
         FindFiles.in(table).withRecordsMatching(Expressions.equal("id", 1)).collect();
 
-    Assert.assertEquals(Sets.newHashSet("/path/to/data-e.parquet"), pathSet(files));
+    assertThat(pathSet(files)).containsExactly("/path/to/data-e.parquet");
   }
 
-  @Test
+  @TestTemplate
   public void testInPartition() {
     table
         .newAppend()
@@ -115,10 +109,10 @@ public class TestFindFiles extends TableTestBase {
             .inPartition(table.spec(), StaticDataTask.Row.of(2))
             .collect();
 
-    Assert.assertEquals(pathSet(FILE_B, FILE_C), pathSet(files));
+    assertThat(pathSet(files)).isEqualTo(pathSet(FILE_B, FILE_C));
   }
 
-  @Test
+  @TestTemplate
   public void testInPartitions() {
     table
         .newAppend()
@@ -133,10 +127,10 @@ public class TestFindFiles extends TableTestBase {
             .inPartitions(table.spec(), StaticDataTask.Row.of(1), StaticDataTask.Row.of(2))
             .collect();
 
-    Assert.assertEquals(pathSet(FILE_B, FILE_C), pathSet(files));
+    assertThat(pathSet(files)).isEqualTo(pathSet(FILE_B, FILE_C));
   }
 
-  @Test
+  @TestTemplate
   public void testAsOfTimestamp() {
     table.newAppend().appendFile(FILE_A).commit();
 
@@ -150,10 +144,10 @@ public class TestFindFiles extends TableTestBase {
 
     Iterable<DataFile> files = FindFiles.in(table).asOfTime(timestamp).collect();
 
-    Assert.assertEquals(pathSet(FILE_A, FILE_B), pathSet(files));
+    assertThat(pathSet(files)).isEqualTo(pathSet(FILE_A, FILE_B));
   }
 
-  @Test
+  @TestTemplate
   public void testSnapshotId() {
     table.newAppend().appendFile(FILE_A).appendFile(FILE_B).commit();
 
@@ -165,10 +159,10 @@ public class TestFindFiles extends TableTestBase {
 
     Iterable<DataFile> files = FindFiles.in(table).inSnapshot(snapshotId).collect();
 
-    Assert.assertEquals(pathSet(FILE_A, FILE_B, FILE_C), pathSet(files));
+    assertThat(pathSet(files)).isEqualTo(pathSet(FILE_A, FILE_B, FILE_C));
   }
 
-  @Test
+  @TestTemplate
   public void testCaseSensitivity() {
     table
         .newAppend()
@@ -184,25 +178,25 @@ public class TestFindFiles extends TableTestBase {
             .withMetadataMatching(Expressions.startsWith("FILE_PATH", "/path/to/data-a"))
             .collect();
 
-    Assert.assertEquals(pathSet(FILE_A), pathSet(files));
+    assertThat(pathSet(files)).isEqualTo(pathSet(FILE_A));
   }
 
-  @Test
+  @TestTemplate
   public void testIncludeColumnStats() {
     table.newAppend().appendFile(FILE_WITH_STATS).commit();
 
     Iterable<DataFile> files = FindFiles.in(table).includeColumnStats().collect();
     final DataFile file = files.iterator().next();
 
-    Assert.assertEquals(FILE_WITH_STATS.columnSizes(), file.columnSizes());
-    Assert.assertEquals(FILE_WITH_STATS.valueCounts(), file.valueCounts());
-    Assert.assertEquals(FILE_WITH_STATS.nullValueCounts(), file.nullValueCounts());
-    Assert.assertEquals(FILE_WITH_STATS.nanValueCounts(), file.nanValueCounts());
-    Assert.assertEquals(FILE_WITH_STATS.lowerBounds(), file.lowerBounds());
-    Assert.assertEquals(FILE_WITH_STATS.upperBounds(), file.upperBounds());
+    assertThat(file.columnSizes()).isEqualTo(FILE_WITH_STATS.columnSizes());
+    assertThat(file.valueCounts()).isEqualTo(FILE_WITH_STATS.valueCounts());
+    assertThat(file.nullValueCounts()).isEqualTo(FILE_WITH_STATS.nullValueCounts());
+    assertThat(file.nanValueCounts()).isEqualTo(FILE_WITH_STATS.nanValueCounts());
+    assertThat(file.lowerBounds()).isEqualTo(FILE_WITH_STATS.lowerBounds());
+    assertThat(file.upperBounds()).isEqualTo(FILE_WITH_STATS.upperBounds());
   }
 
-  @Test
+  @TestTemplate
   public void testNoSnapshot() {
     // a table has no snapshot when it just gets created and no data is loaded yet
 
@@ -210,15 +204,38 @@ public class TestFindFiles extends TableTestBase {
     Iterable<DataFile> files = FindFiles.in(table).collect();
 
     // verify an empty collection of data file is returned
-    Assert.assertEquals(0, Sets.newHashSet(files).size());
+    assertThat(files).hasSize(0);
+  }
+
+  @TestTemplate
+  public void testPlanWith() {
+    table
+        .newAppend()
+        .appendFile(FILE_A)
+        .appendFile(FILE_B)
+        .appendFile(FILE_C)
+        .appendFile(FILE_D)
+        .commit();
+
+    ExecutorService executorService = Executors.newFixedThreadPool(2);
+    try {
+      Iterable<DataFile> files =
+          FindFiles.in(table)
+              .planWith(executorService)
+              .withMetadataMatching(Expressions.startsWith("file_path", "/path/to/data"))
+              .collect();
+
+      assertThat(pathSet(files)).isEqualTo(pathSet(FILE_A, FILE_B, FILE_C, FILE_D));
+    } finally {
+      executorService.shutdown();
+    }
   }
 
   private Set<String> pathSet(DataFile... files) {
-    return Sets.newHashSet(
-        Iterables.transform(Arrays.asList(files), file -> file.path().toString()));
+    return Sets.newHashSet(Iterables.transform(Arrays.asList(files), ContentFile::location));
   }
 
   private Set<String> pathSet(Iterable<DataFile> files) {
-    return Sets.newHashSet(Iterables.transform(files, file -> file.path().toString()));
+    return Sets.newHashSet(Iterables.transform(files, ContentFile::location));
   }
 }

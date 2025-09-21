@@ -18,6 +18,8 @@
  */
 package org.apache.iceberg.orc;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
@@ -41,11 +43,9 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.types.Types;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 public class TestOrcDeleteWriters {
   private static final Schema SCHEMA =
@@ -55,9 +55,9 @@ public class TestOrcDeleteWriters {
 
   private List<Record> records;
 
-  @Rule public TemporaryFolder temp = new TemporaryFolder();
+  @TempDir private File temp;
 
-  @Before
+  @BeforeEach
   public void createDeleteRecords() {
     GenericRecord record = GenericRecord.create(SCHEMA);
 
@@ -73,9 +73,7 @@ public class TestOrcDeleteWriters {
 
   @Test
   public void testEqualityDeleteWriter() throws IOException {
-    File deleteFile = temp.newFile();
-
-    OutputFile out = Files.localOutput(deleteFile);
+    OutputFile out = Files.localOutput(temp);
     EqualityDeleteWriter<Record> deleteWriter =
         ORC.writeDeletes(out)
             .createWriterFunc(GenericOrcWriter::buildWriter)
@@ -90,12 +88,11 @@ public class TestOrcDeleteWriters {
     }
 
     DeleteFile metadata = deleteWriter.toDeleteFile();
-    Assert.assertEquals("Format should be ORC", FileFormat.ORC, metadata.format());
-    Assert.assertEquals(
-        "Should be equality deletes", FileContent.EQUALITY_DELETES, metadata.content());
-    Assert.assertEquals("Record count should be correct", records.size(), metadata.recordCount());
-    Assert.assertEquals("Partition should be empty", 0, metadata.partition().size());
-    Assert.assertNull("Key metadata should be null", metadata.keyMetadata());
+    assertThat(metadata.format()).isEqualTo(FileFormat.ORC);
+    assertThat(metadata.content()).isEqualTo(FileContent.EQUALITY_DELETES);
+    assertThat(metadata.recordCount()).isEqualTo(records.size());
+    assertThat(metadata.partition().size()).isEqualTo(0);
+    assertThat(metadata.keyMetadata()).isNull();
 
     List<Record> deletedRecords;
     try (CloseableIterable<Record> reader =
@@ -106,13 +103,11 @@ public class TestOrcDeleteWriters {
       deletedRecords = Lists.newArrayList(reader);
     }
 
-    Assert.assertEquals("Deleted records should match expected", records, deletedRecords);
+    assertThat(deletedRecords).as("Deleted records should match expected").isEqualTo(records);
   }
 
   @Test
   public void testPositionDeleteWriter() throws IOException {
-    File deleteFile = temp.newFile();
-
     Schema deleteSchema =
         new Schema(
             MetadataColumns.DELETE_FILE_PATH,
@@ -124,7 +119,7 @@ public class TestOrcDeleteWriters {
     GenericRecord posDelete = GenericRecord.create(deleteSchema);
     List<Record> expectedDeleteRecords = Lists.newArrayList();
 
-    OutputFile out = Files.localOutput(deleteFile);
+    OutputFile out = Files.localOutput(temp);
     PositionDeleteWriter<Record> deleteWriter =
         ORC.writeDeletes(out)
             .createWriterFunc(GenericOrcWriter::buildWriter)
@@ -147,12 +142,11 @@ public class TestOrcDeleteWriters {
     }
 
     DeleteFile metadata = deleteWriter.toDeleteFile();
-    Assert.assertEquals("Format should be ORC", FileFormat.ORC, metadata.format());
-    Assert.assertEquals(
-        "Should be position deletes", FileContent.POSITION_DELETES, metadata.content());
-    Assert.assertEquals("Record count should be correct", records.size(), metadata.recordCount());
-    Assert.assertEquals("Partition should be empty", 0, metadata.partition().size());
-    Assert.assertNull("Key metadata should be null", metadata.keyMetadata());
+    assertThat(metadata.format()).isEqualTo(FileFormat.ORC);
+    assertThat(metadata.content()).isEqualTo(FileContent.POSITION_DELETES);
+    assertThat(metadata.recordCount()).isEqualTo(records.size());
+    assertThat(metadata.partition().size()).isEqualTo(0);
+    assertThat(metadata.keyMetadata()).isNull();
 
     List<Record> deletedRecords;
     try (CloseableIterable<Record> reader =
@@ -163,14 +157,13 @@ public class TestOrcDeleteWriters {
       deletedRecords = Lists.newArrayList(reader);
     }
 
-    Assert.assertEquals(
-        "Deleted records should match expected", expectedDeleteRecords, deletedRecords);
+    assertThat(deletedRecords)
+        .as("Deleted records should match expected")
+        .isEqualTo(expectedDeleteRecords);
   }
 
   @Test
   public void testPositionDeleteWriterWithEmptyRow() throws IOException {
-    File deleteFile = temp.newFile();
-
     Schema deleteSchema =
         new Schema(MetadataColumns.DELETE_FILE_PATH, MetadataColumns.DELETE_FILE_POS);
 
@@ -178,7 +171,7 @@ public class TestOrcDeleteWriters {
     GenericRecord posDelete = GenericRecord.create(deleteSchema);
     List<Record> expectedDeleteRecords = Lists.newArrayList();
 
-    OutputFile out = Files.localOutput(deleteFile);
+    OutputFile out = Files.localOutput(temp);
     PositionDeleteWriter<Void> deleteWriter =
         ORC.writeDeletes(out)
             .createWriterFunc(GenericOrcWriter::buildWriter)
@@ -202,12 +195,11 @@ public class TestOrcDeleteWriters {
     }
 
     DeleteFile metadata = deleteWriter.toDeleteFile();
-    Assert.assertEquals("Format should be ORC", FileFormat.ORC, metadata.format());
-    Assert.assertEquals(
-        "Should be position deletes", FileContent.POSITION_DELETES, metadata.content());
-    Assert.assertEquals("Record count should be correct", records.size(), metadata.recordCount());
-    Assert.assertEquals("Partition should be empty", 0, metadata.partition().size());
-    Assert.assertNull("Key metadata should be null", metadata.keyMetadata());
+    assertThat(metadata.format()).isEqualTo(FileFormat.ORC);
+    assertThat(metadata.content()).isEqualTo(FileContent.POSITION_DELETES);
+    assertThat(metadata.recordCount()).isEqualTo(records.size());
+    assertThat(metadata.partition().size()).isEqualTo(0);
+    assertThat(metadata.keyMetadata()).isNull();
 
     List<Record> deletedRecords;
     try (CloseableIterable<Record> reader =
@@ -217,8 +209,8 @@ public class TestOrcDeleteWriters {
             .build()) {
       deletedRecords = Lists.newArrayList(reader);
     }
-
-    Assert.assertEquals(
-        "Deleted records should match expected", expectedDeleteRecords, deletedRecords);
+    assertThat(deletedRecords)
+        .as("Deleted records should match expected")
+        .isEqualTo(expectedDeleteRecords);
   }
 }

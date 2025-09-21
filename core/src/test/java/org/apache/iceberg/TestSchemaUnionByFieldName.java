@@ -20,11 +20,15 @@ package org.apache.iceberg;
 
 import static org.apache.iceberg.types.Types.NestedField.optional;
 import static org.apache.iceberg.types.Types.NestedField.required;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.iceberg.expressions.Literal;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
-import org.apache.iceberg.types.Type.PrimitiveType;
+import org.apache.iceberg.types.EdgeAlgorithm;
+import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.types.Types.BinaryType;
 import org.apache.iceberg.types.Types.BooleanType;
@@ -33,6 +37,8 @@ import org.apache.iceberg.types.Types.DecimalType;
 import org.apache.iceberg.types.Types.DoubleType;
 import org.apache.iceberg.types.Types.FixedType;
 import org.apache.iceberg.types.Types.FloatType;
+import org.apache.iceberg.types.Types.GeographyType;
+import org.apache.iceberg.types.Types.GeometryType;
 import org.apache.iceberg.types.Types.IntegerType;
 import org.apache.iceberg.types.Types.ListType;
 import org.apache.iceberg.types.Types.LongType;
@@ -40,15 +46,16 @@ import org.apache.iceberg.types.Types.NestedField;
 import org.apache.iceberg.types.Types.StringType;
 import org.apache.iceberg.types.Types.StructType;
 import org.apache.iceberg.types.Types.TimeType;
+import org.apache.iceberg.types.Types.TimestampNanoType;
 import org.apache.iceberg.types.Types.TimestampType;
 import org.apache.iceberg.types.Types.UUIDType;
-import org.assertj.core.api.Assertions;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.iceberg.types.Types.UnknownType;
+import org.apache.iceberg.types.Types.VariantType;
+import org.junit.jupiter.api.Test;
 
 public class TestSchemaUnionByFieldName {
 
-  private static List<? extends PrimitiveType> primitiveTypes() {
+  private static List<? extends Type> primitiveTypes() {
     return Lists.newArrayList(
         StringType.get(),
         TimeType.get(),
@@ -63,11 +70,19 @@ public class TestSchemaUnionByFieldName {
         FixedType.ofLength(10),
         DecimalType.of(10, 2),
         LongType.get(),
-        FloatType.get());
+        FloatType.get(),
+        VariantType.get(),
+        UnknownType.get(),
+        TimestampNanoType.withoutZone(),
+        TimestampNanoType.withZone(),
+        GeometryType.crs84(),
+        GeometryType.of("srid:3857"),
+        GeographyType.crs84(),
+        GeographyType.of("srid:4269", EdgeAlgorithm.KARNEY));
   }
 
   private static NestedField[] primitiveFields(
-      Integer initialValue, List<? extends PrimitiveType> primitiveTypes) {
+      Integer initialValue, List<? extends Type> primitiveTypes) {
     AtomicInteger atomicInteger = new AtomicInteger(initialValue);
     return primitiveTypes.stream()
         .map(
@@ -75,7 +90,7 @@ public class TestSchemaUnionByFieldName {
                 optional(
                     atomicInteger.incrementAndGet(),
                     type.toString(),
-                    Types.fromPrimitiveString(type.toString())))
+                    Types.fromTypeName(type.toString())))
         .toArray(NestedField[]::new);
   }
 
@@ -83,50 +98,71 @@ public class TestSchemaUnionByFieldName {
   public void testAddTopLevelPrimitives() {
     Schema newSchema = new Schema(primitiveFields(0, primitiveTypes()));
     Schema applied = new SchemaUpdate(new Schema(), 0).unionByNameWith(newSchema).apply();
-    Assert.assertEquals(newSchema.asStruct(), applied.asStruct());
+    assertThat(applied.asStruct()).isEqualTo(newSchema.asStruct());
+  }
+
+  @Test
+  public void testAddFieldWithDefault() {
+    Schema newSchema =
+        new Schema(
+            optional("test")
+                .withId(1)
+                .ofType(LongType.get())
+                .withDoc("description")
+                .withInitialDefault(Literal.of(34))
+                .withWriteDefault(Literal.of(35))
+                .build());
+    Schema applied = new SchemaUpdate(new Schema(), 0).unionByNameWith(newSchema).apply();
+    assertThat(applied.asStruct()).isEqualTo(newSchema.asStruct());
   }
 
   @Test
   public void testAddTopLevelListOfPrimitives() {
-    for (PrimitiveType primitiveType : primitiveTypes()) {
+    for (Type primitiveType : primitiveTypes()) {
       Schema newSchema =
           new Schema(optional(1, "aList", Types.ListType.ofOptional(2, primitiveType)));
       Schema applied = new SchemaUpdate(new Schema(), 0).unionByNameWith(newSchema).apply();
-      Assert.assertEquals(newSchema.asStruct(), applied.asStruct());
+      assertThat(applied.asStruct()).isEqualTo(newSchema.asStruct());
     }
   }
 
   @Test
   public void testAddTopLevelMapOfPrimitives() {
-    for (PrimitiveType primitiveType : primitiveTypes()) {
+    for (Type primitiveType : primitiveTypes()) {
+      if (primitiveType.equals(UnknownType.get())) {
+        // The UnknownType has to be optional, and this conflicts with the map key that must be
+        // required
+        continue;
+      }
+
       Schema newSchema =
           new Schema(
               optional(1, "aMap", Types.MapType.ofOptional(2, 3, primitiveType, primitiveType)));
       Schema applied = new SchemaUpdate(new Schema(), 0).unionByNameWith(newSchema).apply();
-      Assert.assertEquals(newSchema.asStruct(), applied.asStruct());
+      assertThat(applied.asStruct()).isEqualTo(newSchema.asStruct());
     }
   }
 
   @Test
   public void testAddTopLevelStructOfPrimitives() {
-    for (PrimitiveType primitiveType : primitiveTypes()) {
+    for (Type primitiveType : primitiveTypes()) {
       Schema currentSchema =
           new Schema(
               optional(1, "aStruct", Types.StructType.of(optional(2, "primitive", primitiveType))));
       Schema applied = new SchemaUpdate(new Schema(), 0).unionByNameWith(currentSchema).apply();
-      Assert.assertEquals(currentSchema.asStruct(), applied.asStruct());
+      assertThat(applied.asStruct()).isEqualTo(currentSchema.asStruct());
     }
   }
 
   @Test
   public void testAddNestedPrimitive() {
-    for (PrimitiveType primitiveType : primitiveTypes()) {
+    for (Type primitiveType : primitiveTypes()) {
       Schema currentSchema = new Schema(optional(1, "aStruct", Types.StructType.of()));
       Schema newSchema =
           new Schema(
               optional(1, "aStruct", Types.StructType.of(optional(2, "primitive", primitiveType))));
       Schema applied = new SchemaUpdate(currentSchema, 1).unionByNameWith(newSchema).apply();
-      Assert.assertEquals(newSchema.asStruct(), applied.asStruct());
+      assertThat(applied.asStruct()).isEqualTo(newSchema.asStruct());
     }
   }
 
@@ -137,7 +173,7 @@ public class TestSchemaUnionByFieldName {
         new Schema(
             optional(1, "aStruct", Types.StructType.of(primitiveFields(1, primitiveTypes()))));
     Schema applied = new SchemaUpdate(currentSchema, 1).unionByNameWith(newSchema).apply();
-    Assert.assertEquals(newSchema.asStruct(), applied.asStruct());
+    assertThat(applied.asStruct()).isEqualTo(newSchema.asStruct());
   }
 
   @Test
@@ -166,7 +202,7 @@ public class TestSchemaUnionByFieldName {
                                                 Types.ListType.ofOptional(
                                                     10, DecimalType.of(11, 20))))))))))));
     Schema applied = new SchemaUpdate(new Schema(), 0).unionByNameWith(newSchema).apply();
-    Assert.assertEquals(newSchema.asStruct(), applied.asStruct());
+    assertThat(applied.asStruct()).isEqualTo(newSchema.asStruct());
   }
 
   @Test
@@ -202,7 +238,7 @@ public class TestSchemaUnionByFieldName {
                                                                 "aString",
                                                                 StringType.get()))))))))))))));
     Schema applied = new SchemaUpdate(new Schema(), 0).unionByNameWith(newSchema).apply();
-    Assert.assertEquals(newSchema.asStruct(), applied.asStruct());
+    assertThat(applied.asStruct()).isEqualTo(newSchema.asStruct());
   }
 
   @Test
@@ -235,7 +271,7 @@ public class TestSchemaUnionByFieldName {
                                     Types.MapType.ofOptional(
                                         12, 13, StringType.get(), StringType.get()))))))));
     Schema applied = new SchemaUpdate(new Schema(), 0).unionByNameWith(newSchema).apply();
-    Assert.assertEquals(newSchema.asStruct(), applied.asStruct());
+    assertThat(applied.asStruct()).isEqualTo(newSchema.asStruct());
   }
 
   @Test
@@ -244,8 +280,7 @@ public class TestSchemaUnionByFieldName {
         new Schema(optional(1, "aList", Types.ListType.ofOptional(2, StringType.get())));
     Schema newSchema =
         new Schema(optional(1, "aList", Types.ListType.ofOptional(2, LongType.get())));
-    Assertions.assertThatThrownBy(
-            () -> new SchemaUpdate(currentSchema, 2).unionByNameWith(newSchema).apply())
+    assertThatThrownBy(() -> new SchemaUpdate(currentSchema, 2).unionByNameWith(newSchema).apply())
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot change column type: aList.element: string -> long");
   }
@@ -261,8 +296,7 @@ public class TestSchemaUnionByFieldName {
         new Schema(
             optional(1, "aMap", Types.MapType.ofOptional(2, 3, StringType.get(), LongType.get())));
 
-    Assertions.assertThatThrownBy(
-            () -> new SchemaUpdate(currentSchema, 3).unionByNameWith(newSchema).apply())
+    assertThatThrownBy(() -> new SchemaUpdate(currentSchema, 3).unionByNameWith(newSchema).apply())
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot change column type: aMap.value: string -> long");
   }
@@ -276,10 +310,43 @@ public class TestSchemaUnionByFieldName {
     Schema newSchema =
         new Schema(
             optional(1, "aMap", Types.MapType.ofOptional(2, 3, UUIDType.get(), StringType.get())));
-    Assertions.assertThatThrownBy(
-            () -> new SchemaUpdate(currentSchema, 3).unionByNameWith(newSchema).apply())
+    assertThatThrownBy(() -> new SchemaUpdate(currentSchema, 3).unionByNameWith(newSchema).apply())
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot change column type: aMap.key: string -> uuid");
+  }
+
+  @Test
+  public void testUpdateColumnDoc() {
+    Schema currentSchema = new Schema(required(1, "aCol", IntegerType.get()));
+    Schema newSchema = new Schema(required(1, "aCol", IntegerType.get(), "description"));
+
+    Schema applied = new SchemaUpdate(currentSchema, 1).unionByNameWith(newSchema).apply();
+    assertThat(applied.asStruct()).isEqualTo(newSchema.asStruct());
+  }
+
+  @Test
+  public void testUpdateColumnDefaults() {
+    Schema currentSchema = new Schema(required(1, "aCol", IntegerType.get()));
+    Schema newSchema =
+        new Schema(
+            required("aCol")
+                .withId(1)
+                .ofType(IntegerType.get())
+                .withInitialDefault(Literal.of(34))
+                .withWriteDefault(Literal.of(35))
+                .build());
+
+    // the initial default is not modified for existing columns
+    Schema expected =
+        new Schema(
+            required("aCol")
+                .withId(1)
+                .ofType(IntegerType.get())
+                .withWriteDefault(Literal.of(35))
+                .build());
+
+    Schema applied = new SchemaUpdate(currentSchema, 1).unionByNameWith(newSchema).apply();
+    assertThat(applied.asStruct()).isEqualTo(expected.asStruct());
   }
 
   @Test
@@ -289,8 +356,8 @@ public class TestSchemaUnionByFieldName {
     Schema newSchema = new Schema(required(1, "aCol", LongType.get()));
 
     Schema applied = new SchemaUpdate(currentSchema, 1).unionByNameWith(newSchema).apply();
-    Assert.assertEquals(1, applied.asStruct().fields().size());
-    Assert.assertEquals(LongType.get(), applied.asStruct().fields().get(0).type());
+    assertThat(applied.asStruct().fields()).hasSize(1);
+    assertThat(applied.asStruct().fields().get(0).type()).isEqualTo(LongType.get());
   }
 
   @Test
@@ -300,23 +367,39 @@ public class TestSchemaUnionByFieldName {
     Schema newSchema = new Schema(required(1, "aCol", DoubleType.get()));
 
     Schema applied = new SchemaUpdate(currentSchema, 1).unionByNameWith(newSchema).apply();
-    Assert.assertEquals(1, applied.asStruct().fields().size());
-    Assert.assertEquals(DoubleType.get(), applied.asStruct().fields().get(0).type());
-    // When attempted Assert.assertEquals(newSchema.asStruct(), applied.asStruct());
-    // Got java.lang.AssertionError:
-    // Expected :struct<1: aCol: required double>
-    // Actual   :struct<1: aCol: required double ()>
+    assertThat(applied.asStruct()).isEqualTo(newSchema.asStruct());
+    assertThat(applied.asStruct().fields()).hasSize(1);
+    assertThat(applied.asStruct().fields().get(0).type()).isEqualTo(DoubleType.get());
   }
 
   @Test
-  public void testInvalidTypePromoteDoubleToFloat() {
+  public void testIgnoreTypePromoteDoubleToFloat() {
     Schema currentSchema = new Schema(required(1, "aCol", DoubleType.get()));
     Schema newSchema = new Schema(required(1, "aCol", FloatType.get()));
 
-    Assertions.assertThatThrownBy(
-            () -> new SchemaUpdate(currentSchema, 1).unionByNameWith(newSchema).apply())
-        .isInstanceOf(IllegalArgumentException.class)
-        .hasMessage("Cannot change column type: aCol: double -> float");
+    Schema applied = new SchemaUpdate(currentSchema, 1).unionByNameWith(newSchema).apply();
+    assertThat(applied.asStruct()).isEqualTo(currentSchema.asStruct());
+    assertThat(applied.asStruct().fields()).hasSize(1);
+    assertThat(applied.asStruct().fields().get(0).type()).isEqualTo(DoubleType.get());
+  }
+
+  @Test
+  public void testIgnoreTypePromoteLongToInt() {
+    Schema currentSchema = new Schema(required(1, "aCol", LongType.get()));
+    Schema newSchema = new Schema(required(1, "aCol", IntegerType.get()));
+
+    Schema applied = new SchemaUpdate(currentSchema, 1).unionByNameWith(newSchema).apply();
+    assertThat(applied.asStruct().fields()).hasSize(1);
+    assertThat(applied.asStruct().fields().get(0).type()).isEqualTo(LongType.get());
+  }
+
+  @Test
+  public void testIgnoreTypePromoteDecimalToNarrowerPrecision() {
+    Schema currentSchema = new Schema(required(1, "aCol", DecimalType.of(20, 1)));
+    Schema newSchema = new Schema(required(1, "aCol", DecimalType.of(10, 1)));
+
+    Schema applied = new SchemaUpdate(currentSchema, 1).unionByNameWith(newSchema).apply();
+    assertThat(applied.asStruct()).isEqualTo(currentSchema.asStruct());
   }
 
   @Test
@@ -327,7 +410,7 @@ public class TestSchemaUnionByFieldName {
     Schema newSchema = new Schema(required(1, "aCol", DecimalType.of(22, 1)));
 
     Schema applied = new SchemaUpdate(currentSchema, 1).unionByNameWith(newSchema).apply();
-    Assert.assertEquals(newSchema.asStruct(), applied.asStruct());
+    assertThat(applied.asStruct()).isEqualTo(newSchema.asStruct());
   }
 
   @Test
@@ -388,7 +471,7 @@ public class TestSchemaUnionByFieldName {
                                         optional(5, "value", StringType.get()),
                                         optional(6, "time", TimeType.get())))))))));
 
-    Assert.assertEquals(expected.asStruct(), applied.asStruct());
+    assertThat(applied.asStruct()).isEqualTo(expected.asStruct());
   }
 
   @Test
@@ -396,8 +479,7 @@ public class TestSchemaUnionByFieldName {
     Schema currentSchema =
         new Schema(optional(1, "aColumn", Types.ListType.ofOptional(2, StringType.get())));
     Schema newSchema = new Schema(optional(1, "aColumn", StringType.get()));
-    Assertions.assertThatThrownBy(
-            () -> new SchemaUpdate(currentSchema, 2).unionByNameWith(newSchema).apply())
+    assertThatThrownBy(() -> new SchemaUpdate(currentSchema, 2).unionByNameWith(newSchema).apply())
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessage("Cannot change column type: aColumn: list<string> -> string");
   }
@@ -427,7 +509,7 @@ public class TestSchemaUnionByFieldName {
 
     Schema union = new SchemaUpdate(aSchema, 0).unionByNameWith(mirrored).apply();
     // We don't expect the original schema to have been altered.
-    Assert.assertEquals(aSchema.asStruct(), union.asStruct());
+    assertThat(union.asStruct()).isEqualTo(aSchema.asStruct());
   }
 
   @Test
@@ -463,7 +545,7 @@ public class TestSchemaUnionByFieldName {
                         7, "d1", Types.StructType.of(optional(8, "d2", Types.StringType.get()))))));
 
     Schema union = new SchemaUpdate(schema, 5).unionByNameWith(observed).apply();
-    Assert.assertEquals(observed.asStruct(), union.asStruct());
+    assertThat(union.asStruct()).isEqualTo(observed.asStruct());
   }
 
   @Test
@@ -514,7 +596,7 @@ public class TestSchemaUnionByFieldName {
                                                                 StringType.get()))))))))))))));
 
     Schema applied = new SchemaUpdate(schema, 4).unionByNameWith(observed).apply();
-    Assert.assertEquals(observed.asStruct(), applied.asStruct());
+    assertThat(applied.asStruct()).isEqualTo(observed.asStruct());
   }
 
   @Test
@@ -579,6 +661,6 @@ public class TestSchemaUnionByFieldName {
                                         "list2",
                                         ListType.ofOptional(7, StringType.get())))))))));
 
-    Assert.assertEquals(expected.asStruct(), union.asStruct());
+    assertThat(union.asStruct()).isEqualTo(expected.asStruct());
   }
 }

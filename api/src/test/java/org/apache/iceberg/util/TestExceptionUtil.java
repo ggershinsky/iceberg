@@ -18,9 +18,11 @@
  */
 package org.apache.iceberg.util;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 import java.io.IOException;
 import java.util.Arrays;
-import org.assertj.core.api.Assertions;
+import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.Test;
 
 public class TestExceptionUtil {
@@ -36,7 +38,7 @@ public class TestExceptionUtil {
     CustomCheckedException exc = new CustomCheckedException("test");
     Exception suppressedOne = new Exception("test catch suppression");
     RuntimeException suppressedTwo = new RuntimeException("test finally suppression");
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 ExceptionUtil.runSafely(
                     () -> {
@@ -50,9 +52,10 @@ public class TestExceptionUtil {
                     },
                     CustomCheckedException.class))
         .isInstanceOf(CustomCheckedException.class)
+        .hasMessage(exc.getMessage())
         .isEqualTo(exc)
         .extracting(e -> Arrays.asList(e.getSuppressed()))
-        .asList()
+        .asInstanceOf(InstanceOfAssertFactories.LIST)
         .hasSize(2)
         .containsExactly(suppressedOne, suppressedTwo);
   }
@@ -62,7 +65,7 @@ public class TestExceptionUtil {
     CustomCheckedException exc = new CustomCheckedException("test");
     Exception suppressedOne = new Exception("test catch suppression");
     RuntimeException suppressedTwo = new RuntimeException("test finally suppression");
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 ExceptionUtil.runSafely(
                     (ExceptionUtil.Block<
@@ -79,9 +82,10 @@ public class TestExceptionUtil {
                     CustomCheckedException.class,
                     IOException.class))
         .isInstanceOf(CustomCheckedException.class)
+        .hasMessage(exc.getMessage())
         .isEqualTo(exc)
         .extracting(e -> Arrays.asList(e.getSuppressed()))
-        .asList()
+        .asInstanceOf(InstanceOfAssertFactories.LIST)
         .hasSize(2)
         .containsExactly(suppressedOne, suppressedTwo);
   }
@@ -91,7 +95,7 @@ public class TestExceptionUtil {
     CustomCheckedException exc = new CustomCheckedException("test");
     Exception suppressedOne = new Exception("test catch suppression");
     RuntimeException suppressedTwo = new RuntimeException("test finally suppression");
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 ExceptionUtil.runSafely(
                     (ExceptionUtil.Block<
@@ -109,9 +113,10 @@ public class TestExceptionUtil {
                     IOException.class,
                     ClassNotFoundException.class))
         .isInstanceOf(CustomCheckedException.class)
+        .hasMessage(exc.getMessage())
         .isEqualTo(exc)
         .extracting(e -> Arrays.asList(e.getSuppressed()))
-        .asList()
+        .asInstanceOf(InstanceOfAssertFactories.LIST)
         .hasSize(2)
         .containsExactly(suppressedOne, suppressedTwo);
   }
@@ -121,7 +126,7 @@ public class TestExceptionUtil {
     RuntimeException exc = new RuntimeException("test");
     Exception suppressedOne = new Exception("test catch suppression");
     CustomCheckedException suppressedTwo = new CustomCheckedException("test finally suppression");
-    Assertions.assertThatThrownBy(
+    assertThatThrownBy(
             () ->
                 ExceptionUtil.runSafely(
                     () -> {
@@ -134,9 +139,10 @@ public class TestExceptionUtil {
                       throw suppressedTwo;
                     }))
         .isInstanceOf(RuntimeException.class)
+        .hasMessage(exc.getMessage())
         .isEqualTo(exc)
         .extracting(e -> Arrays.asList(e.getSuppressed()))
-        .asList()
+        .asInstanceOf(InstanceOfAssertFactories.LIST)
         .hasSize(2)
         .containsExactly(suppressedOne, suppressedTwo);
   }

@@ -26,6 +26,7 @@ import java.util.function.Function;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.expressions.Binder;
+import org.apache.iceberg.expressions.Bound;
 import org.apache.iceberg.expressions.BoundReference;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.ExpressionVisitors;
@@ -452,6 +453,9 @@ public class ParquetDictionaryRowGroupFilter {
           case DOUBLE:
             dictSet.add((T) conversion.apply(dict.decodeToDouble(i)));
             break;
+          case INT96:
+            dictSet.add((T) conversion.apply(dict.decodeToBinary(i)));
+            break;
           default:
             throw new IllegalArgumentException(
                 "Cannot decode dictionary of type: "
@@ -462,6 +466,11 @@ public class ParquetDictionaryRowGroupFilter {
       dictCache.put(id, dictSet);
 
       return dictSet;
+    }
+
+    @Override
+    public <T> Boolean handleNonReference(Bound<T> term) {
+      return ROWS_MIGHT_MATCH;
     }
   }
 

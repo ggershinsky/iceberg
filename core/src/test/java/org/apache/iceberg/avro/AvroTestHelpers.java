@@ -19,6 +19,7 @@
 package org.apache.iceberg.avro;
 
 import static org.apache.iceberg.avro.AvroSchemaUtil.toOption;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Arrays;
 import java.util.List;
@@ -28,8 +29,8 @@ import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData.Record;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
-import org.assertj.core.api.Assertions;
-import org.junit.Assert;
+import org.apache.iceberg.variants.Variant;
+import org.apache.iceberg.variants.VariantTestUtil;
 
 class AvroTestHelpers {
 
@@ -45,6 +46,15 @@ class AvroTestHelpers {
 
   static Schema record(String name, Schema.Field... fields) {
     return Schema.createRecord(name, null, null, false, Arrays.asList(fields));
+  }
+
+  static Schema variant(String name) {
+    Schema schema =
+        record(
+            name,
+            new Schema.Field("metadata", Schema.create(Schema.Type.BYTES), null, null),
+            new Schema.Field("value", Schema.create(Schema.Type.BYTES), null, null));
+    return VariantLogicalType.get().addToSchema(schema);
   }
 
   static Schema.Field addId(int id, Schema.Field field) {
@@ -82,7 +92,7 @@ class AvroTestHelpers {
   static void assertEquals(Types.ListType list, List<?> expected, List<?> actual) {
     Type elementType = list.elementType();
 
-    Assert.assertEquals("List size should match", expected.size(), actual.size());
+    assertThat(actual).as("List size should match").hasSameSizeAs(expected);
 
     for (int i = 0; i < expected.size(); i += 1) {
       Object expectedValue = expected.get(i);
@@ -95,7 +105,7 @@ class AvroTestHelpers {
   static void assertEquals(Types.MapType map, Map<?, ?> expected, Map<?, ?> actual) {
     Type valueType = map.valueType();
 
-    Assert.assertEquals("Map size should match", expected.size(), actual.size());
+    assertThat(actual).as("Map keys should match").hasSameSizeAs(expected);
 
     for (Object expectedKey : expected.keySet()) {
       Object expectedValue = expected.get(expectedKey);
@@ -120,27 +130,34 @@ class AvroTestHelpers {
       case DATE:
       case TIME:
       case TIMESTAMP:
+      case TIMESTAMP_NANO:
       case UUID:
       case FIXED:
       case BINARY:
       case DECIMAL:
-        Assert.assertEquals("Primitive value should be equal to expected", expected, actual);
+        assertThat(actual).as("Primitive value should be equal to expected").isEqualTo(expected);
+        break;
+      case VARIANT:
+        assertThat(expected).as("Expected should be a Variant").isInstanceOf(Variant.class);
+        assertThat(actual).as("Actual should be a Variant").isInstanceOf(Variant.class);
+        Variant expectedVariant = (Variant) expected;
+        Variant actualVariant = (Variant) actual;
+        VariantTestUtil.assertEqual(expectedVariant.metadata(), actualVariant.metadata());
+        VariantTestUtil.assertEqual(expectedVariant.value(), actualVariant.value());
         break;
       case STRUCT:
-        Assertions.assertThat(expected)
-            .as("Expected should be a Record")
-            .isInstanceOf(Record.class);
-        Assertions.assertThat(actual).as("Actual should be a Record").isInstanceOf(Record.class);
+        assertThat(expected).as("Expected should be a Record").isInstanceOf(Record.class);
+        assertThat(actual).as("Actual should be a Record").isInstanceOf(Record.class);
         assertEquals(type.asStructType(), (Record) expected, (Record) actual);
         break;
       case LIST:
-        Assertions.assertThat(expected).as("Expected should be a List").isInstanceOf(List.class);
-        Assertions.assertThat(actual).as("Actual should be a List").isInstanceOf(List.class);
+        assertThat(expected).as("Expected should be a List").isInstanceOf(List.class);
+        assertThat(actual).as("Actual should be a List").isInstanceOf(List.class);
         assertEquals(type.asListType(), (List) expected, (List) actual);
         break;
       case MAP:
-        Assertions.assertThat(expected).as("Expected should be a Map").isInstanceOf(Map.class);
-        Assertions.assertThat(actual).as("Actual should be a Map").isInstanceOf(Map.class);
+        assertThat(expected).as("Expected should be a Map").isInstanceOf(Map.class);
+        assertThat(actual).as("Actual should be a Map").isInstanceOf(Map.class);
         assertEquals(type.asMapType(), (Map<?, ?>) expected, (Map<?, ?>) actual);
         break;
       default:

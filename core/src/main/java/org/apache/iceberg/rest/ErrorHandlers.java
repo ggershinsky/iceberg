@@ -24,8 +24,10 @@ import org.apache.iceberg.exceptions.BadRequestException;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
 import org.apache.iceberg.exceptions.ForbiddenException;
+import org.apache.iceberg.exceptions.NamespaceNotEmptyException;
 import org.apache.iceberg.exceptions.NoSuchNamespaceException;
 import org.apache.iceberg.exceptions.NoSuchTableException;
+import org.apache.iceberg.exceptions.NoSuchViewException;
 import org.apache.iceberg.exceptions.NotAuthorizedException;
 import org.apache.iceberg.exceptions.RESTException;
 import org.apache.iceberg.exceptions.ServiceFailureException;
@@ -51,8 +53,20 @@ public class ErrorHandlers {
     return NamespaceErrorHandler.INSTANCE;
   }
 
+  public static Consumer<ErrorResponse> dropNamespaceErrorHandler() {
+    return DropNamespaceErrorHandler.INSTANCE;
+  }
+
   public static Consumer<ErrorResponse> tableErrorHandler() {
     return TableErrorHandler.INSTANCE;
+  }
+
+  public static Consumer<ErrorResponse> viewErrorHandler() {
+    return ViewErrorHandler.INSTANCE;
+  }
+
+  public static Consumer<ErrorResponse> viewCommitHandler() {
+    return ViewCommitErrorHandler.INSTANCE;
   }
 
   public static Consumer<ErrorResponse> tableCommitHandler() {
@@ -80,6 +94,7 @@ public class ErrorHandlers {
           throw new CommitFailedException("Commit failed: %s", error.message());
         case 500:
         case 502:
+        case 503:
         case 504:
           throw new CommitStateUnknownException(
               new ServiceFailureException("Service failed: %s: %s", error.code(), error.message()));
@@ -110,19 +125,82 @@ public class ErrorHandlers {
     }
   }
 
-  /** Request error handler specifically for CRUD ops on namespaces. */
+  /** View commit error handler. */
+  private static class ViewCommitErrorHandler extends DefaultErrorHandler {
+    private static final ErrorHandler INSTANCE = new ViewCommitErrorHandler();
+
+    @Override
+    public void accept(ErrorResponse error) {
+      switch (error.code()) {
+        case 404:
+          throw new NoSuchViewException("%s", error.message());
+        case 409:
+          throw new CommitFailedException("Commit failed: %s", error.message());
+        case 500:
+        case 502:
+        case 503:
+        case 504:
+          throw new CommitStateUnknownException(
+              new ServiceFailureException("Service failed: %s: %s", error.code(), error.message()));
+      }
+
+      super.accept(error);
+    }
+  }
+
+  /** View level error handler. */
+  private static class ViewErrorHandler extends DefaultErrorHandler {
+    private static final ErrorHandler INSTANCE = new ViewErrorHandler();
+
+    @Override
+    public void accept(ErrorResponse error) {
+      switch (error.code()) {
+        case 404:
+          if (NoSuchNamespaceException.class.getSimpleName().equals(error.type())) {
+            throw new NoSuchNamespaceException("%s", error.message());
+          } else {
+            throw new NoSuchViewException("%s", error.message());
+          }
+        case 409:
+          throw new AlreadyExistsException("%s", error.message());
+      }
+
+      super.accept(error);
+    }
+  }
+
+  /** Request error handler specifically for create-read-update ops on namespaces. */
   private static class NamespaceErrorHandler extends DefaultErrorHandler {
     private static final ErrorHandler INSTANCE = new NamespaceErrorHandler();
 
     @Override
     public void accept(ErrorResponse error) {
       switch (error.code()) {
+        case 400:
+          if (NamespaceNotEmptyException.class.getSimpleName().equals(error.type())) {
+            throw new NamespaceNotEmptyException("%s", error.message());
+          }
+          throw new BadRequestException("Malformed request: %s", error.message());
         case 404:
           throw new NoSuchNamespaceException("%s", error.message());
         case 409:
           throw new AlreadyExistsException("%s", error.message());
         case 422:
           throw new RESTException("Unable to process: %s", error.message());
+      }
+
+      super.accept(error);
+    }
+  }
+
+  /** Request error handler for drop namespace operations. */
+  private static class DropNamespaceErrorHandler extends NamespaceErrorHandler {
+    private static final ErrorHandler INSTANCE = new DropNamespaceErrorHandler();
+
+    @Override
+    public void accept(ErrorResponse error) {
+      if (error.code() == 409) {
+        throw new NamespaceNotEmptyException("%s", error.message());
       }
 
       super.accept(error);
@@ -150,6 +228,9 @@ public class ErrorHandlers {
     public void accept(ErrorResponse error) {
       switch (error.code()) {
         case 400:
+          if (IllegalArgumentException.class.getSimpleName().equals(error.type())) {
+            throw new IllegalArgumentException(error.message());
+          }
           throw new BadRequestException("Malformed request: %s", error.message());
         case 401:
           throw new NotAuthorizedException("Not authorized: %s", error.message());

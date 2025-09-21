@@ -18,13 +18,13 @@
  */
 package org.apache.iceberg.util;
 
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import org.apache.iceberg.BaseCombinedScanTask;
 import org.apache.iceberg.BaseScanTaskGroup;
 import org.apache.iceberg.CombinedScanTask;
-import org.apache.iceberg.ContentFile;
 import org.apache.iceberg.FileContent;
 import org.apache.iceberg.FileScanTask;
 import org.apache.iceberg.MergeableScanTask;
@@ -42,9 +42,12 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.relocated.com.google.common.math.LongMath;
 import org.apache.iceberg.types.Types;
 
 public class TableScanUtil {
+
+  private static final long MIN_SPLIT_SIZE = 16 * 1024 * 1024; // 16 MB
 
   private TableScanUtil() {}
 
@@ -88,8 +91,7 @@ public class TableScanUtil {
     Function<FileScanTask, Long> weightFunc =
         file ->
             Math.max(
-                file.length()
-                    + file.deletes().stream().mapToLong(ContentFile::fileSizeInBytes).sum(),
+                file.length() + ScanTaskUtil.contentSizeInBytes(file.deletes()),
                 (1 + file.deletes().size()) * openFileCost);
 
     return CloseableIterable.transform(
@@ -149,6 +151,7 @@ public class TableScanUtil {
         task -> Math.max(task.sizeBytes(), task.filesCount() * openFileCost);
 
     Map<Integer, StructProjection> groupingKeyProjectionsBySpec = Maps.newHashMap();
+    PartitionData groupingKeyTemplate = new PartitionData(groupingKeyType);
 
     // group tasks by grouping keys derived from their partition tuples
     StructLikeMap<List<T>> tasksByGroupingKey = StructLikeMap.create(groupingKeyType);
@@ -162,7 +165,7 @@ public class TableScanUtil {
               specId -> StructProjection.create(spec.partitionType(), groupingKeyType));
       List<T> groupingKeyTasks =
           tasksByGroupingKey.computeIfAbsent(
-              projectGroupingKey(groupingKeyProjection, groupingKeyType, partition),
+              groupingKeyTemplate.copyFor(groupingKeyProjection.wrap(partition)),
               groupingKey -> Lists.newArrayList());
       if (task instanceof SplittableScanTask<?>) {
         ((SplittableScanTask<? extends T>) task).split(splitSize).forEach(groupingKeyTasks::add);
@@ -182,23 +185,6 @@ public class TableScanUtil {
     }
 
     return taskGroups;
-  }
-
-  private static StructLike projectGroupingKey(
-      StructProjection groupingKeyProjection,
-      Types.StructType groupingKeyType,
-      StructLike partition) {
-
-    PartitionData groupingKey = new PartitionData(groupingKeyType);
-
-    groupingKeyProjection.wrap(partition);
-
-    for (int pos = 0; pos < groupingKeyProjection.size(); pos++) {
-      Class<?> javaClass = groupingKey.getType(pos).typeId().javaClass();
-      groupingKey.set(pos, groupingKeyProjection.get(pos, javaClass));
-    }
-
-    return groupingKey;
   }
 
   private static <T extends ScanTask> Iterable<ScanTaskGroup<T>> toTaskGroupIterable(
@@ -244,6 +230,18 @@ public class TableScanUtil {
     }
 
     return mergedTasks;
+  }
+
+  public static long adjustSplitSize(long scanSize, int parallelism, long splitSize) {
+    Preconditions.checkArgument(parallelism > 0, "Parallelism must be > 0: %s", parallelism);
+    Preconditions.checkArgument(splitSize > 0, "Split size must be > 0: %s", splitSize);
+
+    // use the configured split size if it produces at least one split per slot
+    // otherwise, adjust the split size to target parallelism with a reasonable minimum
+    // increasing the split size may cause expensive spills and is not done automatically
+    long splitCount = LongMath.divide(scanSize, splitSize, RoundingMode.CEILING);
+    long adjustedSplitSize = Math.max(scanSize / parallelism, Math.min(MIN_SPLIT_SIZE, splitSize));
+    return splitCount < parallelism ? adjustedSplitSize : splitSize;
   }
 
   private static void validatePlanningArguments(long splitSize, int lookback, long openFileCost) {

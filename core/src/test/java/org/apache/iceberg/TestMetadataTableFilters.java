@@ -18,60 +18,61 @@
  */
 package org.apache.iceberg;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
+
+import java.util.List;
 import java.util.Set;
-import java.util.stream.StreamSupport;
+import java.util.stream.Collectors;
 import org.apache.iceberg.expressions.Expression;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.io.CloseableIterable;
-import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Types;
-import org.junit.Assert;
-import org.junit.Assume;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
 
-@RunWith(Parameterized.class)
-public class TestMetadataTableFilters extends TableTestBase {
+@ExtendWith(ParameterizedTestExtension.class)
+public class TestMetadataTableFilters extends TestBase {
 
-  private static final Set<MetadataTableType> aggFileTables =
+  private static final Set<MetadataTableType> AGG_FILE_TABLES =
       Sets.newHashSet(
           MetadataTableType.ALL_DATA_FILES,
-          MetadataTableType.ALL_DATA_FILES,
+          MetadataTableType.ALL_DELETE_FILES,
           MetadataTableType.ALL_FILES,
           MetadataTableType.ALL_ENTRIES);
 
-  private final MetadataTableType type;
+  @Parameter(index = 1)
+  private MetadataTableType type;
 
-  @Parameterized.Parameters(name = "table_type = {0}, format = {1}")
-  public static Object[][] parameters() {
-    return new Object[][] {
-      {MetadataTableType.DATA_FILES, 1},
-      {MetadataTableType.DATA_FILES, 2},
-      {MetadataTableType.DELETE_FILES, 2},
-      {MetadataTableType.FILES, 1},
-      {MetadataTableType.FILES, 2},
-      {MetadataTableType.ALL_DATA_FILES, 1},
-      {MetadataTableType.ALL_DATA_FILES, 2},
-      {MetadataTableType.ALL_DELETE_FILES, 2},
-      {MetadataTableType.ALL_FILES, 1},
-      {MetadataTableType.ALL_FILES, 2},
-      {MetadataTableType.ENTRIES, 1},
-      {MetadataTableType.ENTRIES, 2},
-      {MetadataTableType.ALL_ENTRIES, 1},
-      {MetadataTableType.ALL_ENTRIES, 2}
-    };
+  @Parameters(name = "formatVersion = {0}, table_type = {1}")
+  protected static List<Object> parameters() {
+    return TestHelpers.ALL_VERSIONS.stream()
+        .flatMap(
+            v -> {
+              ImmutableList.Builder<Object[]> builder =
+                  ImmutableList.<Object[]>builder()
+                      .add(new Object[] {v, MetadataTableType.DATA_FILES})
+                      .add(new Object[] {v, MetadataTableType.FILES})
+                      .add(new Object[] {v, MetadataTableType.ALL_DATA_FILES})
+                      .add(new Object[] {v, MetadataTableType.ALL_FILES})
+                      .add(new Object[] {v, MetadataTableType.ENTRIES})
+                      .add(new Object[] {v, MetadataTableType.ALL_ENTRIES});
+              if (v >= 2) {
+                builder
+                    .add(new Object[] {v, MetadataTableType.DELETE_FILES})
+                    .add(new Object[] {v, MetadataTableType.ALL_DELETE_FILES});
+              }
+
+              return builder.build().stream();
+            })
+        .collect(Collectors.toList());
   }
 
-  public TestMetadataTableFilters(MetadataTableType type, int formatVersion) {
-    super(formatVersion);
-    this.type = type;
-  }
-
-  @Before
+  @BeforeEach
   @Override
   public void setupTable() throws Exception {
     super.setupTable();
@@ -81,9 +82,9 @@ public class TestMetadataTableFilters extends TableTestBase {
     table.newFastAppend().appendFile(FILE_D).commit();
     table.newFastAppend().appendFile(FILE_B).commit();
 
-    if (formatVersion == 2) {
-      table.newRowDelta().addDeletes(FILE_A_DELETES).commit();
-      table.newRowDelta().addDeletes(FILE_B_DELETES).commit();
+    if (formatVersion >= 2) {
+      table.newRowDelta().addDeletes(fileADeletes()).commit();
+      table.newRowDelta().addDeletes(fileBDeletes()).commit();
       table.newRowDelta().addDeletes(FILE_C2_DELETES).commit();
       table.newRowDelta().addDeletes(FILE_D2_DELETES).commit();
     }
@@ -99,10 +100,7 @@ public class TestMetadataTableFilters extends TableTestBase {
           .newDelete()
           .deleteFromRowFilter(Expressions.alwaysTrue())
           .commit(); // Removes all entries
-      Assert.assertEquals(
-          "Current snapshot should be made empty",
-          0,
-          table.currentSnapshot().allManifests(table.io()).size());
+      assertThat(table.currentSnapshot().allManifests(table.io())).isEmpty();
     }
   }
 
@@ -140,9 +138,9 @@ public class TestMetadataTableFilters extends TableTestBase {
         }
       case DATA_FILES:
       case DELETE_FILES:
-      case ALL_DELETE_FILES:
         return partitions;
       case ALL_DATA_FILES:
+      case ALL_DELETE_FILES:
         return partitions * 2; // ScanTask for Data Manifest in DELETED and ADDED states
       case ALL_FILES:
       case ALL_ENTRIES:
@@ -157,7 +155,7 @@ public class TestMetadataTableFilters extends TableTestBase {
   }
 
   private boolean isAggFileTable(MetadataTableType tableType) {
-    return aggFileTables.contains(tableType);
+    return AGG_FILE_TABLES.contains(tableType);
   }
 
   private String partitionColumn(String colName) {
@@ -177,7 +175,9 @@ public class TestMetadataTableFilters extends TableTestBase {
     }
   }
 
-  /** @return a basic expression that always evaluates to true, to test AND logic */
+  /**
+   * @return a basic expression that always evaluates to true, to test AND logic
+   */
   private Expression dummyExpression() {
     switch (type) {
       case FILES:
@@ -195,21 +195,21 @@ public class TestMetadataTableFilters extends TableTestBase {
     }
   }
 
-  @Test
+  @TestTemplate
   public void testNoFilter() {
     Table metadataTable = createMetadataTable();
 
     TableScan scan = metadataTable.newScan().select(partitionColumn("data_bucket"));
     CloseableIterable<FileScanTask> tasks = scan.planFiles();
 
-    Assert.assertEquals(expectedScanTaskCount(4), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(4));
     validateFileScanTasks(tasks, 0);
     validateFileScanTasks(tasks, 1);
     validateFileScanTasks(tasks, 2);
     validateFileScanTasks(tasks, 3);
   }
 
-  @Test
+  @TestTemplate
   public void testAnd() {
     Table metadataTable = createMetadataTable();
 
@@ -218,23 +218,23 @@ public class TestMetadataTableFilters extends TableTestBase {
     TableScan scan = metadataTable.newScan().filter(and);
     CloseableIterable<FileScanTask> tasks = scan.planFiles();
 
-    Assert.assertEquals(expectedScanTaskCount(1), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(1));
     validateFileScanTasks(tasks, 0);
   }
 
-  @Test
+  @TestTemplate
   public void testLt() {
     Table metadataTable = createMetadataTable();
 
     Expression lt = Expressions.lessThan(partitionColumn("data_bucket"), 2);
     TableScan scan = metadataTable.newScan().filter(lt);
     CloseableIterable<FileScanTask> tasks = scan.planFiles();
-    Assert.assertEquals(expectedScanTaskCount(2), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(2));
     validateFileScanTasks(tasks, 0);
     validateFileScanTasks(tasks, 1);
   }
 
-  @Test
+  @TestTemplate
   public void testOr() {
     Table metadataTable = createMetadataTable();
 
@@ -244,14 +244,14 @@ public class TestMetadataTableFilters extends TableTestBase {
 
     CloseableIterable<FileScanTask> tasks = scan.planFiles();
 
-    Assert.assertEquals(expectedScanTaskCount(4), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(4));
     validateFileScanTasks(tasks, 0);
     validateFileScanTasks(tasks, 1);
     validateFileScanTasks(tasks, 2);
     validateFileScanTasks(tasks, 3);
   }
 
-  @Test
+  @TestTemplate
   public void testNot() {
     Table metadataTable = createMetadataTable();
 
@@ -259,12 +259,12 @@ public class TestMetadataTableFilters extends TableTestBase {
     TableScan scan = metadataTable.newScan().filter(not);
 
     CloseableIterable<FileScanTask> tasks = scan.planFiles();
-    Assert.assertEquals(expectedScanTaskCount(2), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(2));
     validateFileScanTasks(tasks, 2);
     validateFileScanTasks(tasks, 3);
   }
 
-  @Test
+  @TestTemplate
   public void testIn() {
     Table metadataTable = createMetadataTable();
 
@@ -272,20 +272,20 @@ public class TestMetadataTableFilters extends TableTestBase {
     TableScan scan = metadataTable.newScan().filter(set);
 
     CloseableIterable<FileScanTask> tasks = scan.planFiles();
-    Assert.assertEquals(expectedScanTaskCount(2), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(2));
 
     validateFileScanTasks(tasks, 2);
     validateFileScanTasks(tasks, 3);
   }
 
-  @Test
+  @TestTemplate
   public void testNotNull() {
     Table metadataTable = createMetadataTable();
     Expression unary = Expressions.notNull(partitionColumn("data_bucket"));
     TableScan scan = metadataTable.newScan().filter(unary);
 
     CloseableIterable<FileScanTask> tasks = scan.planFiles();
-    Assert.assertEquals(expectedScanTaskCount(4), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(4));
 
     validateFileScanTasks(tasks, 0);
     validateFileScanTasks(tasks, 1);
@@ -293,7 +293,7 @@ public class TestMetadataTableFilters extends TableTestBase {
     validateFileScanTasks(tasks, 3);
   }
 
-  @Test
+  @TestTemplate
   public void testPlanTasks() {
     Table metadataTable = createMetadataTable();
 
@@ -302,13 +302,13 @@ public class TestMetadataTableFilters extends TableTestBase {
 
     TableScan scan = metadataTable.newScan().filter(and);
     CloseableIterable<CombinedScanTask> tasks = scan.planTasks();
-    Assert.assertEquals(1, Iterables.size(tasks));
+    assertThat(tasks).hasSize(1);
     validateCombinedScanTasks(tasks, 0);
   }
 
-  @Test
+  @TestTemplate
   public void testPartitionSpecEvolutionRemovalV1() {
-    Assume.assumeTrue(formatVersion == 1);
+    assumeThat(formatVersion).isEqualTo(1);
 
     // Change spec and add two data files
     table.updateSpec().removeField(Expressions.bucket("data", 16)).addField("id").commit();
@@ -325,7 +325,7 @@ public class TestMetadataTableFilters extends TableTestBase {
             .withPartition(data10Key)
             .build();
     PartitionKey data11Key = new PartitionKey(newSpec, table.schema());
-    data10Key.set(1, 11);
+    data11Key.set(1, 11);
     DataFile data11 =
         DataFiles.builder(newSpec)
             .withPath("/path/to/data-11.parquet")
@@ -348,10 +348,7 @@ public class TestMetadataTableFilters extends TableTestBase {
           .newDelete()
           .deleteFromRowFilter(Expressions.alwaysTrue())
           .commit(); // Removes all entries
-      Assert.assertEquals(
-          "Current snapshot should be made empty",
-          0,
-          table.currentSnapshot().allManifests(table.io()).size());
+      assertThat(table.currentSnapshot().allManifests(table.io())).isEmpty();
     }
 
     Table metadataTable = createMetadataTable();
@@ -361,7 +358,7 @@ public class TestMetadataTableFilters extends TableTestBase {
     CloseableIterable<FileScanTask> tasks = scan.planFiles();
 
     // All 4 original data files written by old spec, plus one data file written by new spec
-    Assert.assertEquals(expectedScanTaskCount(5), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(5));
 
     filter =
         Expressions.and(Expressions.equal(partitionColumn("data_bucket"), 0), dummyExpression());
@@ -370,12 +367,12 @@ public class TestMetadataTableFilters extends TableTestBase {
 
     // 1 original data file written by old spec (V1 filters out new specs which don't have this
     // value)
-    Assert.assertEquals(expectedScanTaskCount(1), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(1));
   }
 
-  @Test
+  @TestTemplate
   public void testPartitionSpecEvolutionRemovalV2() {
-    Assume.assumeTrue(formatVersion == 2);
+    assumeThat(formatVersion).isGreaterThanOrEqualTo(2);
 
     // Change spec and add two data and delete files each
     table.updateSpec().removeField(Expressions.bucket("data", 16)).addField("id").commit();
@@ -397,27 +394,13 @@ public class TestMetadataTableFilters extends TableTestBase {
             .withPartitionPath("id=11")
             .build();
 
-    DeleteFile delete10 =
-        FileMetadata.deleteFileBuilder(newSpec)
-            .ofPositionDeletes()
-            .withPath("/path/to/data-10-deletes.parquet")
-            .withFileSizeInBytes(10)
-            .withPartitionPath("id=10")
-            .withRecordCount(1)
-            .build();
-    DeleteFile delete11 =
-        FileMetadata.deleteFileBuilder(newSpec)
-            .ofPositionDeletes()
-            .withPath("/path/to/data-11-deletes.parquet")
-            .withFileSizeInBytes(10)
-            .withPartitionPath("id=11")
-            .withRecordCount(1)
-            .build();
+    DeleteFile delete10 = newDeletes(data10);
+    DeleteFile delete11 = newDeletes(data11);
 
     table.newFastAppend().appendFile(data10).commit();
     table.newFastAppend().appendFile(data11).commit();
 
-    if (formatVersion == 2) {
+    if (formatVersion >= 2) {
       table.newRowDelta().addDeletes(delete10).commit();
       table.newRowDelta().addDeletes(delete11).commit();
     }
@@ -433,10 +416,7 @@ public class TestMetadataTableFilters extends TableTestBase {
           .newDelete()
           .deleteFromRowFilter(Expressions.alwaysTrue())
           .commit(); // Removes all entries
-      Assert.assertEquals(
-          "Current snapshot should be made empty",
-          0,
-          table.currentSnapshot().allManifests(table.io()).size());
+      assertThat(table.currentSnapshot().allManifests(table.io())).isEmpty();
     }
 
     Table metadataTable = createMetadataTable();
@@ -447,7 +427,7 @@ public class TestMetadataTableFilters extends TableTestBase {
 
     // All 4 original data/delete files written by old spec, plus one new data file/delete file
     // written by new spec
-    Assert.assertEquals(expectedScanTaskCount(5), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(5));
 
     filter =
         Expressions.and(Expressions.equal(partitionColumn("data_bucket"), 0), dummyExpression());
@@ -456,12 +436,12 @@ public class TestMetadataTableFilters extends TableTestBase {
 
     // 1 original data/delete files written by old spec, plus both of new data file/delete file
     // written by new spec
-    Assert.assertEquals(expectedScanTaskCount(3), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(3));
   }
 
-  @Test
+  @TestTemplate
   public void testPartitionSpecEvolutionAdditiveV1() {
-    Assume.assumeTrue(formatVersion == 1);
+    assumeThat(formatVersion).isEqualTo(1);
 
     // Change spec and add two data files
     table.updateSpec().addField("id").commit();
@@ -479,8 +459,8 @@ public class TestMetadataTableFilters extends TableTestBase {
             .withPartition(data10Key)
             .build();
     PartitionKey data11Key = new PartitionKey(newSpec, table.schema());
-    data11Key.set(0, 1); // data=0
-    data10Key.set(1, 11); // id=11
+    data11Key.set(0, 1); // data=1
+    data11Key.set(1, 11); // id=11
     DataFile data11 =
         DataFiles.builder(newSpec)
             .withPath("/path/to/data-11.parquet")
@@ -503,10 +483,7 @@ public class TestMetadataTableFilters extends TableTestBase {
           .newDelete()
           .deleteFromRowFilter(Expressions.alwaysTrue())
           .commit(); // Removes all entries
-      Assert.assertEquals(
-          "Current snapshot should be made empty",
-          0,
-          table.currentSnapshot().allManifests(table.io()).size());
+      assertThat(table.currentSnapshot().allManifests(table.io())).isEmpty();
     }
 
     Table metadataTable = createMetadataTable();
@@ -517,7 +494,7 @@ public class TestMetadataTableFilters extends TableTestBase {
 
     // All 4 original data/delete files written by old spec, plus one new data file written by new
     // spec
-    Assert.assertEquals(expectedScanTaskCount(5), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(5));
 
     filter =
         Expressions.and(Expressions.equal(partitionColumn("data_bucket"), 0), dummyExpression());
@@ -525,12 +502,12 @@ public class TestMetadataTableFilters extends TableTestBase {
     tasks = scan.planFiles();
 
     // 1 original data file written by old spec, plus 1 new data file written by new spec
-    Assert.assertEquals(expectedScanTaskCount(2), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(2));
   }
 
-  @Test
-  public void testPartitionSpecEvolutionAdditiveV2() {
-    Assume.assumeTrue(formatVersion == 2);
+  @TestTemplate
+  public void testPartitionSpecEvolutionAdditiveV2AndAbove() {
+    assumeThat(formatVersion).isGreaterThanOrEqualTo(2);
 
     // Change spec and add two data and delete files each
     table.updateSpec().addField("id").commit();
@@ -552,27 +529,13 @@ public class TestMetadataTableFilters extends TableTestBase {
             .withPartitionPath("data_bucket=1/id=11")
             .build();
 
-    DeleteFile delete10 =
-        FileMetadata.deleteFileBuilder(newSpec)
-            .ofPositionDeletes()
-            .withPath("/path/to/data-10-deletes.parquet")
-            .withFileSizeInBytes(10)
-            .withPartitionPath("data_bucket=0/id=10")
-            .withRecordCount(1)
-            .build();
-    DeleteFile delete11 =
-        FileMetadata.deleteFileBuilder(newSpec)
-            .ofPositionDeletes()
-            .withPath("/path/to/data-11-deletes.parquet")
-            .withFileSizeInBytes(10)
-            .withPartitionPath("data_bucket=1/id=11")
-            .withRecordCount(1)
-            .build();
+    DeleteFile delete10 = newDeletes(data10);
+    DeleteFile delete11 = newDeletes(data11);
 
     table.newFastAppend().appendFile(data10).commit();
     table.newFastAppend().appendFile(data11).commit();
 
-    if (formatVersion == 2) {
+    if (formatVersion >= 2) {
       table.newRowDelta().addDeletes(delete10).commit();
       table.newRowDelta().addDeletes(delete11).commit();
     }
@@ -588,10 +551,7 @@ public class TestMetadataTableFilters extends TableTestBase {
           .newDelete()
           .deleteFromRowFilter(Expressions.alwaysTrue())
           .commit(); // Removes all entries
-      Assert.assertEquals(
-          "Current snapshot should be made empty",
-          0,
-          table.currentSnapshot().allManifests(table.io()).size());
+      assertThat(table.currentSnapshot().allManifests(table.io())).isEmpty();
     }
 
     Table metadataTable = createMetadataTable();
@@ -602,7 +562,7 @@ public class TestMetadataTableFilters extends TableTestBase {
 
     // All 4 original data/delete files written by old spec, plus one new data file/delete file
     // written by new spec
-    Assert.assertEquals(expectedScanTaskCount(5), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(5));
 
     filter =
         Expressions.and(Expressions.equal(partitionColumn("data_bucket"), 0), dummyExpression());
@@ -611,22 +571,24 @@ public class TestMetadataTableFilters extends TableTestBase {
 
     // 1 original data/delete files written by old spec, plus 1 of new data file/delete file written
     // by new spec
-    Assert.assertEquals(expectedScanTaskCount(2), Iterables.size(tasks));
+    assertThat(tasks).hasSize(expectedScanTaskCount(2));
   }
 
   private void validateFileScanTasks(CloseableIterable<FileScanTask> fileScanTasks, int partValue) {
-    Assert.assertTrue(
-        "File scan tasks do not include correct file",
-        StreamSupport.stream(fileScanTasks.spliterator(), false)
-            .anyMatch(t -> manifestHasPartition(manifest(t), partValue)));
+    assertThat(fileScanTasks)
+        .as("File scan tasks do not include correct file")
+        .anyMatch(t -> manifestHasPartition(manifest(t), partValue));
   }
 
   private void validateCombinedScanTasks(CloseableIterable<CombinedScanTask> tasks, int partValue) {
-    Assert.assertTrue(
-        "File scan tasks do not include correct partition value",
-        StreamSupport.stream(tasks.spliterator(), false)
-            .flatMap(c -> c.files().stream().map(this::manifest))
-            .anyMatch(m -> manifestHasPartition(m, partValue)));
+    assertThat(tasks)
+        .as("File scan tasks do not include correct partition value")
+        .allSatisfy(
+            task -> {
+              assertThat(task.files())
+                  .map(this::manifest)
+                  .anyMatch(m -> manifestHasPartition(m, partValue));
+            });
   }
 
   private boolean manifestHasPartition(ManifestFile mf, int partValue) {
